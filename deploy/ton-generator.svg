@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="TON Generator">
+  <defs>
+    <linearGradient id="bg" x1="64" y1="40" x2="448" y2="472" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172A40"/>
+      <stop offset="1" stop-color="#080B10"/>
+    </linearGradient>
+    <linearGradient id="ton" x1="162" y1="144" x2="350" y2="366" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#68B8FF"/>
+      <stop offset="1" stop-color="#2C92F0"/>
+    </linearGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="124" fill="url(#bg)"/>
+  <circle cx="256" cy="258" r="142" fill="#2C92F0" opacity=".18" filter="url(#glow)"/>
+  <path d="M155 161h202c18 0 29 20 20 35L276 369c-9 15-31 15-40 0L135 196c-9-15 2-35 20-35Z" fill="url(#ton)"/>
+  <path d="M256 330 194 197h124L256 330Zm0-46 27-60h-54l27 60Z" fill="#F7FBFF" fill-rule="evenodd"/>
+  <path d="m381 97 8 25 25 8-25 8-8 25-8-25-25-8 25-8 8-25Zm-259 249 6 19 19 6-19 6-6 19-6-19-19-6 19-6 6-19Z" fill="#8CCDFF"/>
+</svg>

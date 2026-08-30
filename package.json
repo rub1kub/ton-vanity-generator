@@ -1,0 +1,48 @@
+{
+  "name": "tonsuite-ton-vanity-generator",
+  "private": false,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "A privacy-first, browser-only vanity address generator for TON Wallet v4R2 and W5.",
+  "license": "MIT",
+  "homepage": "https://tonsuite.org/generator/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rub1kub/ton-vanity-generator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rub1kub/ton-vanity-generator/issues"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "check": "npm run typecheck && npm run test:run && npm run build"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "@scure/bip39": "^2.4.0",
+    "@ton/crypto": "^3.3.0",
+    "@ton/ton": "^16.3.0",
+    "buffer": "^6.0.3",
+    "lottie-web": "^5.13.0",
+    "pako": "^2.1.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/pako": "^2.0.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}
