@@ -83,13 +83,14 @@ function estimateLabel(attempts: number) {
 function TonSuiteMark() {
   return (
     <a className="brand" href="/" aria-label="На главную TonSuite">
-      <span className="brand__mark" aria-hidden="true">
-        <svg viewBox="0 0 28 28" focusable="false">
-          <path d="M5.8 7.4h16.4L14 22 5.8 7.4Z" />
-          <path className="brand__cut" d="m14 18.3 3.7-7.5h-7.4l3.7 7.5Z" />
-        </svg>
-      </span>
-      <span>TonSuite</span>
+      <img
+        src={`${import.meta.env.BASE_URL}brand/tonsuite-icon.jpg`}
+        width="38"
+        height="38"
+        alt=""
+        aria-hidden="true"
+      />
+      <span><b>Ton</b>Suite</span>
     </a>
   );
 }
@@ -495,7 +496,7 @@ export function App() {
       >
         <MagicWand weight="bold" /> Начать охоту
       </button>
-      <p className="privacy-note"><LockKey weight="fill" /> Интернет после загрузки не нужен</p>
+      <p className="privacy-note"><LockKey weight="fill" /> Всё считается на этом устройстве</p>
     </>
   );
 

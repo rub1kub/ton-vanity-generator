@@ -104,10 +104,23 @@ a { color: inherit; text-decoration: none; }
   padding: 12px 24px;
 }
 
-.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; font-size: 19px; }
-.brand__mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: var(--accent); box-shadow: 0 8px 28px rgba(70,156,236,.25); }
-.brand__mark svg { width: 24px; height: 24px; fill: #fff; }
-.brand__mark .brand__cut { fill: var(--accent); }
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -.025em;
+}
+.brand img {
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(19,143,245,.18);
+  border-radius: 50%;
+  object-fit: cover;
+}
+.brand b { color: #138ff5; font-weight: 800; }
 
 .github-link, .back-button {
   display: inline-flex;

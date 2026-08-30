@@ -62,7 +62,8 @@ export function walletAddressFromPublicKey(
 /**
  * Generates the 12-word TEP-3 multichain mnemonic used by current TON wallets,
  * derives m/44'/607'/0' with SLIP-0010 Ed25519 and creates the requested
- * default contract address. Secret buffers are cleared after derivation.
+ * default contract address. Secret byte buffers are zeroed on a best-effort
+ * basis after derivation; immutable JavaScript strings remain subject to GC.
  */
 export async function generateWalletCandidate(
   version: WalletVersion,
@@ -71,13 +72,15 @@ export async function generateWalletCandidate(
   const mnemonicText = generateMnemonic(wordlist, BIP39_STRENGTH_BITS);
   const mnemonic = mnemonicText.split(' ');
   let rootSeed: Uint8Array | undefined;
+  let rootSeedBuffer: Buffer | undefined;
   let derivedSeed: Buffer | undefined;
   let keyPair: TonKeyPair | undefined;
 
   try {
     rootSeed = await mnemonicToSeedWebcrypto(mnemonicText);
+    rootSeedBuffer = Buffer.from(rootSeed);
     derivedSeed = await deriveEd25519Path(
-      Buffer.from(rootSeed),
+      rootSeedBuffer,
       TON_DERIVATION_PATH,
     );
     keyPair = keyPairFromSeed(derivedSeed);
@@ -92,6 +95,7 @@ export async function generateWalletCandidate(
     };
   } finally {
     rootSeed?.fill(0);
+    rootSeedBuffer?.fill(0);
     derivedSeed?.fill(0);
     keyPair?.secretKey.fill(0);
   }
