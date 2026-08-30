@@ -20,6 +20,7 @@ describe('validateVanitySuffix', () => {
       valid: true,
       suffix: 'Az09_-',
     });
+    expect(validateVanitySuffix('DICK')).toEqual({ valid: true, suffix: 'DICK' });
   });
 
   it.each([
@@ -58,6 +59,8 @@ describe('validateSearchOptions', () => {
         version: 'w5',
         addressFormat: 'non-bounceable',
         caseSensitive: true,
+        engine: 'cpu',
+        locale: 'en',
       }),
     ).toEqual({ valid: true, suffix: 'GRAM' });
   });

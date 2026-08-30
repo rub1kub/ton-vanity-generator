@@ -20,6 +20,62 @@ export interface WalletCandidate {
 }
 
 /**
+ * Finishes TON wallet derivation from an already-derived 64-byte BIP39 root
+ * seed. The caller retains ownership of rootSeed and must wipe it.
+ */
+export async function walletCandidateFromRootSeed(
+  rootSeed: Uint8Array,
+  mnemonic: readonly string[],
+  version: WalletVersion,
+  addressFormat: AddressFormat,
+): Promise<WalletCandidate> {
+  if (rootSeed.byteLength !== 64) {
+    throw new Error('A BIP39 root seed must be exactly 64 bytes.');
+  }
+
+  let rootSeedBuffer: Buffer | undefined;
+  let derivedSeed: Buffer | undefined;
+  let keyPair: TonKeyPair | undefined;
+
+  try {
+    rootSeedBuffer = Buffer.from(rootSeed);
+    derivedSeed = await deriveEd25519Path(rootSeedBuffer, TON_DERIVATION_PATH);
+    keyPair = keyPairFromSeed(derivedSeed);
+
+    return {
+      address: walletAddressFromPublicKey(keyPair.publicKey, version, addressFormat),
+      mnemonic: [...mnemonic],
+    };
+  } finally {
+    rootSeedBuffer?.fill(0);
+    derivedSeed?.fill(0);
+    keyPair?.secretKey.fill(0);
+  }
+}
+
+/** CPU reference path used both by normal search and to verify GPU winners. */
+export async function walletCandidateFromMnemonic(
+  mnemonic: readonly string[],
+  version: WalletVersion,
+  addressFormat: AddressFormat,
+): Promise<WalletCandidate> {
+  const mnemonicText = mnemonic.join(' ');
+  let rootSeed: Uint8Array | undefined;
+
+  try {
+    rootSeed = await mnemonicToSeedWebcrypto(mnemonicText);
+    return await walletCandidateFromRootSeed(
+      rootSeed,
+      mnemonic,
+      version,
+      addressFormat,
+    );
+  } finally {
+    rootSeed?.fill(0);
+  }
+}
+
+/**
  * Produces the canonical mainnet address for the selected wallet contract.
  *
  * v4 uses the Wallet V4R2 contract's standard wallet id. W5 uses the
@@ -71,32 +127,5 @@ export async function generateWalletCandidate(
 ): Promise<WalletCandidate> {
   const mnemonicText = generateMnemonic(wordlist, BIP39_STRENGTH_BITS);
   const mnemonic = mnemonicText.split(' ');
-  let rootSeed: Uint8Array | undefined;
-  let rootSeedBuffer: Buffer | undefined;
-  let derivedSeed: Buffer | undefined;
-  let keyPair: TonKeyPair | undefined;
-
-  try {
-    rootSeed = await mnemonicToSeedWebcrypto(mnemonicText);
-    rootSeedBuffer = Buffer.from(rootSeed);
-    derivedSeed = await deriveEd25519Path(
-      rootSeedBuffer,
-      TON_DERIVATION_PATH,
-    );
-    keyPair = keyPairFromSeed(derivedSeed);
-
-    return {
-      address: walletAddressFromPublicKey(
-        keyPair.publicKey,
-        version,
-        addressFormat,
-      ),
-      mnemonic,
-    };
-  } finally {
-    rootSeed?.fill(0);
-    rootSeedBuffer?.fill(0);
-    derivedSeed?.fill(0);
-    keyPair?.secretKey.fill(0);
-  }
+  return walletCandidateFromMnemonic(mnemonic, version, addressFormat);
 }

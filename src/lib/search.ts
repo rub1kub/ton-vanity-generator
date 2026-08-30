@@ -61,5 +61,13 @@ export function validateSearchOptions(
     return { valid: false, error: 'invalid-characters' };
   }
 
+  if (options.engine !== 'cpu' && options.engine !== 'gpu') {
+    return { valid: false, error: 'invalid-characters' };
+  }
+
+  if (options.locale !== 'ru' && options.locale !== 'en') {
+    return { valid: false, error: 'invalid-characters' };
+  }
+
   return validateVanitySuffix(options.suffix);
 }

@@ -44,7 +44,7 @@ let bundle = readGuarded('assets/index-CZhtzZIH.js');
 bundle = replaceOnce(
   bundle,
   'href:Nt(e)}];',
-  'href:Nt(e)},{avatar:`/assets/projects/ton-generator.svg`,avatarSize:512,title:`TON Generator`,text:k(e,`Красивые TON-адреса локально`,`Vanity TON addresses, generated locally`),href:`/generator/`}];',
+  'href:Nt(e)},{avatar:`/assets/projects/ton-generator.svg`,avatarSize:512,title:`TON Generator`,text:k(e,`Красивые TON-адреса локально`,`Vanity TON addresses, generated locally`),href:k(e,`/generator/`,`/en/generator/`)}];',
   'flagship generator card',
 );
 bundle = replaceOnce(
@@ -74,13 +74,13 @@ bundle = replaceOnce(
 bundle = replaceOnce(
   bundle,
   '(0,O.jsx)(`a`,{href:Nt(e),onClick:()=>r(!1),children:`TON BuyBot`}),(0,O.jsx)(`a`,{href:`${jt(e)}#projects`',
-  '(0,O.jsx)(`a`,{href:Nt(e),onClick:()=>r(!1),children:`TON BuyBot`}),(0,O.jsx)(`a`,{href:`/generator/`,onClick:()=>r(!1),children:`TON Generator`}),(0,O.jsx)(`a`,{href:`${jt(e)}#projects`',
+  '(0,O.jsx)(`a`,{href:Nt(e),onClick:()=>r(!1),children:`TON BuyBot`}),(0,O.jsx)(`a`,{href:k(e,`/generator/`,`/en/generator/`),onClick:()=>r(!1),children:`TON Generator`}),(0,O.jsx)(`a`,{href:`${jt(e)}#projects`',
   'header navigation',
 );
 bundle = replaceOnce(
   bundle,
   '(0,O.jsx)(A,{href:Ct,children:`LOOP`}),r?',
-  '(0,O.jsx)(A,{href:Ct,children:`LOOP`}),(0,O.jsx)(`a`,{href:`/generator/`,children:`TON Generator`}),r?',
+  '(0,O.jsx)(A,{href:Ct,children:`LOOP`}),(0,O.jsx)(`a`,{href:k(e,`/generator/`,`/en/generator/`),children:`TON Generator`}),r?',
   'footer navigation',
 );
 
@@ -126,7 +126,9 @@ function updateStructuredData(html, locale) {
     '@type': 'ListItem',
     position: 4,
     name: 'TON Generator',
-    url: 'https://tonsuite.org/generator/',
+    url: locale === 'ru'
+      ? 'https://tonsuite.org/generator/'
+      : 'https://tonsuite.org/en/generator/',
   });
   return html.replace(pattern, `<script type="application/ld+json">${JSON.stringify(data)}</script>`);
 }
@@ -135,6 +137,7 @@ function patchHomepage(locale) {
   const relativePath = locale === 'ru' ? 'index.html' : 'en/index.html';
   let html = readGuarded(relativePath);
   const isRussian = locale === 'ru';
+  const generatorPath = isRussian ? '/generator/' : '/en/generator/';
 
   html = replaceOnce(html, '/assets/index-CZhtzZIH.js', `/assets/${bundleName}`, `${locale}: bundle reference`);
   html = replaceOnce(
@@ -184,12 +187,12 @@ function patchHomepage(locale) {
       : '<a href="/en/buybot/">TON BuyBot</a><a href="/en/#projects">More projects</a>',
     isRussian
       ? '<a href="/buybot/">TON BuyBot</a><a href="/generator/">TON Generator</a><a href="/#projects">Другие проекты</a>'
-      : '<a href="/en/buybot/">TON BuyBot</a><a href="/generator/">TON Generator</a><a href="/en/#projects">More projects</a>',
+      : '<a href="/en/buybot/">TON BuyBot</a><a href="/en/generator/">TON Generator</a><a href="/en/#projects">More projects</a>',
     `${locale}: rendered header navigation`,
   );
 
   const generatorText = isRussian ? 'Красивые TON-адреса локально' : 'Vanity TON addresses, generated locally';
-  const generatorCard = `<a href="/generator/" class="suite-quick-link" aria-label="TON Generator: ${generatorText}"><span class="suite-quick-number">0<!-- -->4</span><span class="suite-quick-icon" aria-hidden="true"><img src="/assets/projects/ton-generator.svg" alt="" width="512" height="512" decoding="async"/></span><span><strong>TON Generator</strong><small>${generatorText}</small></span>${arrowSvg}</a>`;
+  const generatorCard = `<a href="${generatorPath}" class="suite-quick-link" aria-label="TON Generator: ${generatorText}"><span class="suite-quick-number">0<!-- -->4</span><span class="suite-quick-icon" aria-hidden="true"><img src="/assets/projects/ton-generator.svg" alt="" width="512" height="512" decoding="async"/></span><span><strong>TON Generator</strong><small>${generatorText}</small></span>${arrowSvg}</a>`;
   html = replaceOnce(
     html,
     '</a></nav></div></section><section class="section suite-projects"',
@@ -220,7 +223,7 @@ function patchHomepage(locale) {
       : '<a class="" href="https://app.tonsuite.org/" target="_blank" rel="noreferrer">LOOP</a><a href="/en/tracker/#pricing">Premium</a>',
     isRussian
       ? '<a class="" href="https://app.tonsuite.org/" target="_blank" rel="noreferrer">LOOP</a><a href="/generator/">TON Generator</a><a href="/tracker/#pricing">Премиум</a>'
-      : '<a class="" href="https://app.tonsuite.org/" target="_blank" rel="noreferrer">LOOP</a><a href="/generator/">TON Generator</a><a href="/en/tracker/#pricing">Premium</a>',
+      : '<a class="" href="https://app.tonsuite.org/" target="_blank" rel="noreferrer">LOOP</a><a href="/en/generator/">TON Generator</a><a href="/en/tracker/#pricing">Premium</a>',
     `${locale}: rendered footer navigation`,
   );
 
@@ -260,7 +263,7 @@ sitemap = sitemap.replace(/<lastmod>2026-08-27<\/lastmod>/g, (match) => {
   rootDatesUpdated += 1;
   return rootDatesUpdated <= 2 ? '<lastmod>2026-08-30</lastmod>' : match;
 });
-const generatorUrl = `  <url>\n    <loc>https://tonsuite.org/generator/</loc>\n    <lastmod>2026-08-30</lastmod>\n    <changefreq>monthly</changefreq>\n    <priority>0.9</priority>\n  </url>\n`;
+const generatorUrl = `  <url>\n    <loc>https://tonsuite.org/generator/</loc>\n    <xhtml:link rel="alternate" hreflang="ru" href="https://tonsuite.org/generator/" />\n    <xhtml:link rel="alternate" hreflang="en" href="https://tonsuite.org/en/generator/" />\n    <xhtml:link rel="alternate" hreflang="x-default" href="https://tonsuite.org/generator/" />\n    <lastmod>2026-08-30</lastmod>\n    <changefreq>monthly</changefreq>\n    <priority>0.9</priority>\n  </url>\n  <url>\n    <loc>https://tonsuite.org/en/generator/</loc>\n    <xhtml:link rel="alternate" hreflang="ru" href="https://tonsuite.org/generator/" />\n    <xhtml:link rel="alternate" hreflang="en" href="https://tonsuite.org/en/generator/" />\n    <xhtml:link rel="alternate" hreflang="x-default" href="https://tonsuite.org/generator/" />\n    <lastmod>2026-08-30</lastmod>\n    <changefreq>monthly</changefreq>\n    <priority>0.9</priority>\n  </url>\n`;
 sitemap = replaceOnce(sitemap, '</urlset>', `${generatorUrl}</urlset>`, 'generator sitemap entry');
 writeOutput('sitemap.xml', sitemap);
 

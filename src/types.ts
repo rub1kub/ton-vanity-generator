@@ -1,11 +1,15 @@
 export type WalletVersion = 'v4r2' | 'w5';
 export type AddressFormat = 'non-bounceable' | 'bounceable';
+export type ComputeEngine = 'cpu' | 'gpu';
+export type SearchLocale = 'ru' | 'en';
 
 export interface SearchOptions {
   suffix: string;
   version: WalletVersion;
   addressFormat: AddressFormat;
   caseSensitive: boolean;
+  engine: ComputeEngine;
+  locale: SearchLocale;
 }
 
 export interface SearchProgress {
@@ -34,6 +38,12 @@ export type WorkerRequest =
 
 export type WorkerResponse =
   | { type: 'ready'; workerId: number }
+  | {
+      type: 'engine';
+      workerId: number;
+      engine: ComputeEngine;
+      fallbackReason?: string;
+    }
   | { type: 'progress'; workerId: number; progress: SearchProgress }
   | { type: 'candidate'; workerId: number; candidate: FoundCandidate }
   | { type: 'revealed'; workerId: number; wallet: FoundWallet }
