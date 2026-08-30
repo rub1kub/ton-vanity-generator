@@ -1,3 +1,5 @@
+import type { ComputeEngine } from '../types';
+
 export const DEFAULT_HARDWARE_CONCURRENCY = 4;
 export const BROWSER_WORKER_STABILITY_CAP = 16;
 
@@ -113,4 +115,18 @@ export function resolveWorkerCount(
     policy.maximumWorkerCount,
     Math.max(1, Math.floor(selection)),
   );
+}
+
+/**
+ * Each GPU lane owns a WebGPU batch queue and its own address post-processing
+ * worker. Multiple lanes keep the graphics queue busy while spreading the
+ * unavoidable SLIP-0010, Ed25519, and StateInit tail across browser workers.
+ */
+export function createSearchWorkerPlan(
+  engine: ComputeEngine,
+  cpuWorkerCount: number,
+): ComputeEngine[] {
+  const normalizedCpuCount = Math.max(1, Math.floor(cpuWorkerCount));
+  if (engine === 'cpu') return Array.from({ length: normalizedCpuCount }, () => 'cpu');
+  return Array.from({ length: normalizedCpuCount }, () => 'gpu');
 }

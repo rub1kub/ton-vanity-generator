@@ -10,6 +10,8 @@ Never send a real seed phrase in a bug report.
 ## Security model
 
 - Wallet candidates are generated in dedicated Web Workers.
+- WebGPU buffers and derived seeds stay inside those workers; a winning GPU
+  result is independently re-derived from its mnemonic before acceptance.
 - The generator has no backend API, analytics, account system or persistence.
 - Seed phrases are not written to logs, URLs, cookies, Local Storage or
   IndexedDB.

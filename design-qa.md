@@ -7,6 +7,8 @@
 - Implementation capture: `docs/design-qa/generator-final-desktop-1280x720.png`.
 - Same-input comparison: `docs/design-qa/reference-vs-final-2576x720.png`.
 - Responsive evidence: `docs/design-qa/generator-final-mobile-390x844.png`.
+- Advanced-open evidence: `docs/design-qa/generator-advanced-open-1280x720.png`.
+- Mobile footer evidence: `docs/design-qa/generator-footer-mobile-390x844.png`.
 - Desktop viewport: 1280 × 720 CSS pixels, DPR 1, setup state, dark theme.
 - Mobile viewport: 390 × 844 CSS pixels, DPR 1, setup state, dark theme.
 
@@ -37,6 +39,15 @@ The full-size comparison keeps both 1280 × 720 captures readable in a single im
 - The revealed-seed screen has no destructive Back control; hiding removes all 12 words from the DOM, while the explicit restart returns to a clean setup state.
 - Primary controls meet a 44 px minimum target; visible keyboard focus, semantic pressed states, stronger muted-text contrast, and reduced-motion behavior are present.
 - Browser console reported no errors in desktop, mobile, CPU, GPU, or direct-English-route checks.
+
+## GPU and layout regression check
+
+- Production-build benchmark input: W5, non-bounceable, case-sensitive `GRAMGRAM` ending, same browser and machine.
+- CPU baseline: 7 workers, approximately 451 complete TON addresses per second after 15 seconds.
+- GPU result: 7 parallel WebGPU pipelines, approximately 2,193–2,464 complete TON addresses per second across repeated 20–50 second runs (about 4.9–5.5× the CPU baseline).
+- The throughput counter increments only after PBKDF2, SLIP-0010, Ed25519, StateInit, and friendly-address formatting are complete.
+- With Advanced closed and open at 1280 × 720, the setup hero remained at y=106 and the Utya sticker at y=154; no horizontal movement or overflow was measured.
+- At 390 × 844 the footer uses a centered two-row layout and has no horizontal overflow.
 
 ## Remaining observations
 

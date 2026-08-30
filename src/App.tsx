@@ -9,7 +9,8 @@ import {
   type Locale, type MessageKey,
 } from './i18n';
 import {
-  getBrowserConcurrencyPolicy, resolveWorkerCount, type ConcurrencySelection,
+  createSearchWorkerPlan, getBrowserConcurrencyPolicy, resolveWorkerCount,
+  type ConcurrencySelection,
 } from './lib/concurrency';
 import type {
   AddressFormat, ComputeEngine, FoundCandidate, FoundWallet, SearchOptions,
@@ -108,13 +109,18 @@ export function App() {
   const workersRef = useRef<Worker[]>([]);
   const winningWorkerRef = useRef<Worker | null>(null);
   const workerProgressRef = useRef(new Map<number, SearchProgress>());
+  const workerEngineRef = useRef(new Map<number, ComputeEngine>());
   const searchStartedAtRef = useRef(0);
   const copyTimerRef = useRef<number | undefined>(undefined);
   const progressAnnouncementRef = useRef(0);
 
   const cleanSuffix = suffix.trim();
   const workerCount = resolveWorkerCount(concurrencySelection, concurrencyPolicy);
-  const searchWorkerCount = engine === 'gpu' ? 1 : workerCount;
+  const workerPlan = useMemo(
+    () => createSearchWorkerPlan(engine, workerCount),
+    [engine, workerCount],
+  );
+  const searchWorkerCount = workerPlan.length;
   const suffixError = useMemo(() => {
     if (!cleanSuffix) return t('suffix.required');
     if (!/^[A-Za-z0-9_-]+$/.test(cleanSuffix)) return t('suffix.characters');
@@ -180,6 +186,7 @@ export function App() {
     workersRef.current = [];
     winningWorkerRef.current = null;
     workerProgressRef.current.clear();
+    workerEngineRef.current.clear();
   }, []);
 
   useEffect(() => stopWorkers, [stopWorkers]);
@@ -228,18 +235,21 @@ export function App() {
     searchStartedAtRef.current = Date.now();
     setScreen('searching');
 
-    const options: SearchOptions = {
+    const baseOptions: SearchOptions = {
       suffix: cleanSuffix, version, addressFormat, caseSensitive, engine, locale,
     };
 
-    const nextWorkers = Array.from({ length: searchWorkerCount }, (_, workerId) => {
+    const nextWorkers = workerPlan.map((workerEngine, workerId) => {
       const worker = new Worker(new URL('./workers/vanity.worker.ts', import.meta.url), {
-        type: 'module', name: `ton-vanity-${engine}-${workerId}`,
+        type: 'module', name: `ton-vanity-${workerEngine}-${workerId}`,
       });
       worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
         const message = event.data;
         if (message.type === 'engine') {
-          setActiveEngine(message.engine);
+          workerEngineRef.current.set(message.workerId, message.engine);
+          const reportedEngines = [...workerEngineRef.current.values()];
+          if (reportedEngines.includes('gpu')) setActiveEngine('gpu');
+          else if (workerEngineRef.current.size === workerPlan.length) setActiveEngine('cpu');
           if (message.fallbackReason) setEngineNotice(t('error.gpuFallback'));
         }
         if (message.type === 'progress') {
@@ -274,12 +284,16 @@ export function App() {
         }
       };
       worker.onerror = () => { setError(t('error.generator')); setScreen('setup'); stopWorkers(); };
-      worker.postMessage({ type: 'start', options, workerId });
+      worker.postMessage({
+        type: 'start',
+        options: { ...baseOptions, engine: workerEngine },
+        workerId,
+      });
       return worker;
     });
     workersRef.current = nextWorkers;
   }, [addressFormat, aggregateProgress, caseSensitive, cleanSuffix, engine,
-    gpuAvailable, locale, searchWorkerCount, stopWorkers, suffixError, t, version]);
+    gpuAvailable, locale, stopWorkers, suffixError, t, version, workerPlan]);
 
   const cancelSearch = () => { stopWorkers(); setScreen('setup'); };
   const goBack = () => {
@@ -315,8 +329,10 @@ export function App() {
 
   const setupScreen = (
     <>
-      <ScreenSticker screen="setup" locale={locale} />
-      <div className="hero-copy"><StatusPill locale={locale} /><h1 tabIndex={-1}>{t('setup.title')}</h1><p>{t('setup.description')}</p></div>
+      <div className="setup-hero">
+        <ScreenSticker screen="setup" locale={locale} />
+        <div className="hero-copy"><StatusPill locale={locale} /><h1 tabIndex={-1}>{t('setup.title')}</h1><p>{t('setup.description')}</p></div>
+      </div>
       <section className="panel setup-panel" aria-labelledby="settings-title">
         <h2 id="settings-title" className="sr-only">{t('settings.title')}</h2>
         <label className="field-label" htmlFor="suffix">{t('suffix.label')}</label>
@@ -371,10 +387,10 @@ export function App() {
               </div>
             </div>
 
-            <label className={`select-row ${engine === 'gpu' ? 'is-muted' : ''}`}>
+            <label className="select-row">
               <span className="setting-icon setting-icon--green"><Cpu weight="fill" /></span>
-              <span className="toggle-copy"><strong>{t('threads.title')}</strong><small>{t('threads.description')}</small></span>
-              <select value={String(concurrencySelection)} disabled={engine === 'gpu'} onChange={(event) => {
+              <span className="toggle-copy"><strong>{t(engine === 'gpu' ? 'threads.gpuTitle' : 'threads.title')}</strong><small>{t(engine === 'gpu' ? 'threads.gpuDescription' : 'threads.description', { count: workerCount })}</small></span>
+              <select value={String(concurrencySelection)} onChange={(event) => {
                 const value = event.target.value;
                 setConcurrencySelection(value === 'auto' || value === 'maximum' ? value : Number(value));
               }}>
@@ -414,7 +430,9 @@ export function App() {
     </>
   );
 
-  const engineLabel = activeEngine === 'gpu' ? t('engine.gpu') : t('engine.cpu', { count: searchWorkerCount });
+  const engineLabel = activeEngine === 'gpu'
+    ? t('engine.gpuParallel', { count: workerCount })
+    : t('engine.cpu', { count: searchWorkerCount });
   const searchingScreen = (
     <>
       <ScreenSticker screen="searching" locale={locale} />
@@ -529,7 +547,7 @@ export function App() {
         {screen === 'setup' && setupScreen}{screen === 'searching' && searchingScreen}
         {screen === 'found' && foundScreen}{screen === 'seed-ready' && seedReadyScreen}{screen === 'seed' && seedScreen}
       </main>
-      <footer><span>© {new Date().getFullYear()} TonSuite</span>
+      <footer className="site-footer"><span>© {new Date().getFullYear()} TonSuite</span>
         <a href={locale === 'ru' ? '/privacy/' : '/en/privacy/'}>{t('footer.privacy')}</a>
         <a href="https://t.me/addstickers/UtyaDuck" target="_blank" rel="noreferrer">{t('footer.utya')}</a></footer>
     </div>

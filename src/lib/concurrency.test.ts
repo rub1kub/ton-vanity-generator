@@ -2,12 +2,29 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BROWSER_WORKER_STABILITY_CAP,
+  createSearchWorkerPlan,
   createConcurrencyPolicy,
   formatWorkerCount,
   getBrowserConcurrencyPolicy,
   normalizeHardwareConcurrency,
   resolveWorkerCount,
 } from './concurrency';
+
+describe('createSearchWorkerPlan', () => {
+  it('uses exactly the selected number of CPU workers in CPU mode', () => {
+    expect(createSearchWorkerPlan('cpu', 7)).toEqual([
+      'cpu', 'cpu', 'cpu', 'cpu', 'cpu', 'cpu', 'cpu',
+    ]);
+  });
+
+  it('uses the selected number of independent WebGPU lanes in GPU mode', () => {
+    expect(createSearchWorkerPlan('gpu', 3)).toEqual(['gpu', 'gpu', 'gpu']);
+  });
+
+  it('keeps at least one WebGPU lane', () => {
+    expect(createSearchWorkerPlan('gpu', 0)).toEqual(['gpu']);
+  });
+});
 
 describe('normalizeHardwareConcurrency', () => {
   it.each([undefined, null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY])(

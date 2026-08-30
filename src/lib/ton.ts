@@ -1,6 +1,9 @@
 import { generateMnemonic, mnemonicToSeedWebcrypto } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { deriveEd25519Path, keyPairFromSeed } from '@ton/crypto';
+import { hmac } from '@noble/hashes/hmac.js';
+import { sha512 } from '@noble/hashes/sha2.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { keyPairFromSeed } from '@ton/crypto';
 import { WalletContractV4, WalletContractV5R1 } from '@ton/ton';
 import { Buffer } from 'buffer';
 
@@ -8,6 +11,8 @@ import type { AddressFormat, WalletVersion } from '../types';
 
 const BIP39_STRENGTH_BITS = 128;
 const TON_DERIVATION_PATH = [44, 607, 0];
+const HARDENED_OFFSET = 0x80000000;
+const ED25519_CURVE = new TextEncoder().encode('ed25519 seed');
 const MAINNET_GLOBAL_ID = -239;
 const BASECHAIN_WORKCHAIN = 0;
 
@@ -20,36 +25,109 @@ export interface WalletCandidate {
 }
 
 /**
+ * Synchronous SLIP-0010 Ed25519 derivation for TON's m/44'/607'/0' path.
+ *
+ * The previous implementation imported a Web Crypto HMAC key four times for
+ * every candidate. That fixed per-call overhead dominated the already-fast
+ * WebGPU PBKDF2 stage. Noble's audited SHA-512 implementation keeps these
+ * short HMAC operations in-process and is byte-for-byte checked against
+ * @ton/crypto in the test suite.
+ */
+export function deriveTonPathSeed(rootSeed: Uint8Array): Uint8Array {
+  let digest = hmac(sha512, ED25519_CURVE, rootSeed);
+  let key = digest.slice(0, 32);
+  let chainCode = digest.slice(32);
+  digest.fill(0);
+
+  try {
+    for (const index of TON_DERIVATION_PATH) {
+      const data = new Uint8Array(1 + key.length + 4);
+      data.set(key, 1);
+      new DataView(data.buffer).setUint32(
+        1 + key.length,
+        index + HARDENED_OFFSET,
+        false,
+      );
+
+      try {
+        digest = hmac(sha512, chainCode, data);
+      } finally {
+        data.fill(0);
+      }
+
+      const nextKey = digest.slice(0, 32);
+      const nextChainCode = digest.slice(32);
+      digest.fill(0);
+      key.fill(0);
+      chainCode.fill(0);
+      key = nextKey;
+      chainCode = nextChainCode;
+    }
+
+    chainCode.fill(0);
+    return key;
+  } catch (error) {
+    digest.fill(0);
+    key.fill(0);
+    chainCode.fill(0);
+    throw error;
+  }
+}
+
+/** Fast, audited, cross-browser Ed25519 public-key expansion. */
+export function publicKeyFromSeed(seed: Uint8Array): TonPublicKey {
+  if (seed.byteLength !== 32) {
+    throw new Error('An Ed25519 seed must be exactly 32 bytes.');
+  }
+
+  try {
+    return Buffer.from(ed25519.getPublicKey(seed));
+  } catch {
+    // Keep the existing TON implementation as a correctness-compatible
+    // fallback for an unexpected runtime incompatibility.
+    const keyPair = keyPairFromSeed(Buffer.from(seed));
+    try {
+      return Buffer.from(keyPair.publicKey);
+    } finally {
+      keyPair.secretKey.fill(0);
+    }
+  }
+}
+
+/**
  * Finishes TON wallet derivation from an already-derived 64-byte BIP39 root
  * seed. The caller retains ownership of rootSeed and must wipe it.
  */
-export async function walletCandidateFromRootSeed(
+export function walletCandidateFromRootSeed(
   rootSeed: Uint8Array,
   mnemonic: readonly string[],
   version: WalletVersion,
   addressFormat: AddressFormat,
-): Promise<WalletCandidate> {
+): WalletCandidate {
   if (rootSeed.byteLength !== 64) {
     throw new Error('A BIP39 root seed must be exactly 64 bytes.');
   }
 
   let rootSeedBuffer: Buffer | undefined;
+  let derivedSeedBytes: Uint8Array | undefined;
   let derivedSeed: Buffer | undefined;
-  let keyPair: TonKeyPair | undefined;
+  let publicKey: TonPublicKey | undefined;
 
   try {
     rootSeedBuffer = Buffer.from(rootSeed);
-    derivedSeed = await deriveEd25519Path(rootSeedBuffer, TON_DERIVATION_PATH);
-    keyPair = keyPairFromSeed(derivedSeed);
+    derivedSeedBytes = deriveTonPathSeed(rootSeedBuffer);
+    derivedSeed = Buffer.from(derivedSeedBytes);
+    publicKey = publicKeyFromSeed(derivedSeed);
 
     return {
-      address: walletAddressFromPublicKey(keyPair.publicKey, version, addressFormat),
+      address: walletAddressFromPublicKey(publicKey, version, addressFormat),
       mnemonic: [...mnemonic],
     };
   } finally {
     rootSeedBuffer?.fill(0);
+    derivedSeedBytes?.fill(0);
     derivedSeed?.fill(0);
-    keyPair?.secretKey.fill(0);
+    publicKey?.fill(0);
   }
 }
 

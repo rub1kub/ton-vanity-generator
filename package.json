@@ -23,6 +23,8 @@
     "check": "npm run typecheck && npm run test:run && npm run build"
   },
   "dependencies": {
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.4.0",
     "@phosphor-icons/react": "^2.1.10",
     "@scure/bip39": "^2.4.0",
     "@ton/crypto": "^3.3.0",

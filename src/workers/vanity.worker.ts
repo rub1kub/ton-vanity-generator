@@ -175,47 +175,79 @@ async function runGpuSearch(
       seeds = await accelerator.deriveSeeds(mnemonicTexts);
       if (runId !== activeRunId) return;
 
-      for (let index = 0; index < mnemonicTexts.length; index += 1) {
-        if (runId !== activeRunId) return;
-        const mnemonic = mnemonicTexts[index].split(' ');
+      // Finish the whole GPU batch into canonical TON addresses before
+      // scanning it. Parallel workers provide lane-level concurrency, while
+      // keeping each batch together amortizes GPU buffer and mapping overhead.
+      const derivedBatch = mnemonicTexts.map((mnemonicText, index) => {
+        const mnemonic = mnemonicText.split(' ');
         const seed = seeds[index];
-        const candidate = await ton.walletCandidateFromRootSeed(
-          seed,
-          mnemonic,
-          options.version,
-          options.addressFormat,
-        );
-        seed.fill(0);
-        state.attempts += 1;
-        state.sampleAddress = candidate.address;
-
-        if (matchesVanitySuffix(candidate.address, suffix, options.caseSensitive)) {
-          // A winning GPU result is independently re-derived through Web Crypto
-          // before the public address or recovery phrase is accepted.
-          const verified = await ton.walletCandidateFromMnemonic(
+        try {
+          if (!seed) throw new Error('WebGPU returned an incomplete seed batch.');
+          const candidate = ton.walletCandidateFromRootSeed(
+            seed,
             mnemonic,
             options.version,
             options.addressFormat,
           );
-          if (verified.address !== candidate.address) {
-            clearMnemonic(verified.mnemonic);
-            clearMnemonic(candidate.mnemonic);
-            clearMnemonic(mnemonic);
-            throw new Error('GPU winner failed independent CPU verification.');
-          }
+          return { ok: true as const, mnemonic, candidate };
+        } catch (error) {
+          return { ok: false as const, mnemonic, error };
+        } finally {
+          seed?.fill(0);
+        }
+      });
 
-          clearMnemonic(candidate.mnemonic);
-          clearMnemonic(mnemonic);
-          publishCandidate(runId, workerId, options, verified, state);
-          destroyAccelerator();
-          return;
+      const clearDerivedBatch = () => {
+        for (const item of derivedBatch) {
+          if (item.ok) clearMnemonic(item.candidate.mnemonic);
+          clearMnemonic(item.mnemonic);
+        }
+      };
+      const failure = derivedBatch.find((item) => !item.ok);
+      if (failure && !failure.ok) {
+        clearDerivedBatch();
+        throw failure.error;
+      }
+
+      if (runId !== activeRunId) {
+        clearDerivedBatch();
+        return;
+      }
+
+      let winner: Extract<(typeof derivedBatch)[number], { ok: true }> | undefined;
+      for (const item of derivedBatch) {
+        if (!item.ok) continue;
+        state.attempts += 1;
+        state.sampleAddress = item.candidate.address;
+        if (!winner && matchesVanitySuffix(
+          item.candidate.address,
+          suffix,
+          options.caseSensitive,
+        )) winner = item;
+      }
+
+      if (winner) {
+        // A winning GPU result is independently re-derived from its mnemonic
+        // on the CPU before the address or recovery phrase is accepted.
+        const verified = await ton.walletCandidateFromMnemonic(
+          winner.mnemonic,
+          options.version,
+          options.addressFormat,
+        );
+        if (verified.address !== winner.candidate.address) {
+          clearMnemonic(verified.mnemonic);
+          clearDerivedBatch();
+          throw new Error('GPU winner failed independent CPU verification.');
         }
 
-        clearMnemonic(candidate.mnemonic);
-        clearMnemonic(mnemonic);
-        mnemonicTexts[index] = '';
-        reportProgress(workerId, state);
+        clearDerivedBatch();
+        publishCandidate(runId, workerId, options, verified, state);
+        destroyAccelerator();
+        return;
       }
+
+      clearDerivedBatch();
+      reportProgress(workerId, state);
     } finally {
       for (const seed of seeds) seed.fill(0);
       mnemonicTexts.fill('');

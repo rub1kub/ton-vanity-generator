@@ -10,6 +10,8 @@ entirely in the browser at [`tonsuite.org/generator/`](https://tonsuite.org/gene
 - Supports non-bounceable `UQ…` and bounceable `EQ…` display formats.
 - Uses the current TEP-3 12-word BIP39 format and `m/44'/607'/0'` path.
 - Runs work in multiple dedicated Web Workers.
+- Can run several parallel WebGPU PBKDF2 pipelines while completing canonical
+  TON address derivation inside the same local workers.
 - Keeps generation, candidate keys and recovery words on the user's device.
 - Makes no analytics or wallet API requests.
 
@@ -45,9 +47,14 @@ Static output is written to `dist/`.
 ## Architecture
 
 - React + TypeScript + Vite for the UI.
-- `@ton/crypto` creates the mnemonic and Ed25519 key pair.
+- `@scure/bip39` creates standards-compatible 12-word mnemonics.
+- WebGPU accelerates BIP39 PBKDF2-HMAC-SHA512 in audited, self-tested batches.
+- `@noble/hashes` and `@noble/curves` perform fast SLIP-0010 and Ed25519
+  expansion; `@ton/crypto` remains the correctness-compatible fallback.
 - `@ton/ton` derives the canonical W5/v4R2 contract address.
-- Each worker loops independently and sends aggregate progress to the UI.
+- Every winning GPU candidate is independently re-derived from its mnemonic on
+  the CPU before the address or recovery phrase is accepted.
+- Each worker loops independently and sends only aggregate progress to the UI.
 - Telegram TGS animations are self-hosted and rendered with the light Lottie
   player; no Telegram or FStik request is made at runtime.
 
