@@ -1,6 +1,7 @@
 import {
-  ArrowLeft, Check, CheckCircle, Copy, Cpu, Eye, EyeSlash, GithubLogo,
+  ArrowLeft, Bell, Check, CheckCircle, Copy, Cpu, Eye, EyeSlash, GithubLogo,
   Globe, GraphicsCard, Info, LockKey, MagicWand, ShieldCheck, Sparkle, Stop,
+  TelegramLogo, X,
 } from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { TgsSticker, type StickerName } from './components/TgsSticker';
@@ -105,6 +106,7 @@ export function App() {
   const [copyTarget, setCopyTarget] = useState<CopyTarget>(null);
   const [seedVisible, setSeedVisible] = useState(false);
   const [revealPending, setRevealPending] = useState(false);
+  const [huntStartedOpen, setHuntStartedOpen] = useState(false);
 
   const workersRef = useRef<Worker[]>([]);
   const winningWorkerRef = useRef<Worker | null>(null);
@@ -113,6 +115,8 @@ export function App() {
   const searchStartedAtRef = useRef(0);
   const copyTimerRef = useRef<number | undefined>(undefined);
   const progressAnnouncementRef = useRef(0);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const huntModalCloseRef = useRef<HTMLButtonElement | null>(null);
 
   const cleanSuffix = suffix.trim();
   const workerCount = resolveWorkerCount(concurrencySelection, concurrencyPolicy);
@@ -191,6 +195,38 @@ export function App() {
 
   useEffect(() => stopWorkers, [stopWorkers]);
 
+  useEffect(() => () => {
+    void audioContextRef.current?.close().catch(() => undefined);
+    audioContextRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (!huntStartedOpen) return;
+    window.requestAnimationFrame(() => huntModalCloseRef.current?.focus());
+    const handleModalKeyboard = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setHuntStartedOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = [...document.querySelectorAll<HTMLElement>(
+        '.hunt-modal button:not(:disabled), .hunt-modal a[href]',
+      )];
+      const first = focusable.at(0);
+      const last = focusable.at(-1);
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener('keydown', handleModalKeyboard);
+    return () => window.removeEventListener('keydown', handleModalKeyboard);
+  }, [huntStartedOpen]);
+
   useEffect(() => {
     if (screen !== 'searching') return;
     const timer = window.setInterval(() => {
@@ -223,8 +259,61 @@ export function App() {
     }
   }, [locale]);
 
+  const prepareFoundAlerts = useCallback(() => {
+    const AudioContextConstructor = window.AudioContext
+      ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!audioContextRef.current && AudioContextConstructor) {
+      try { audioContextRef.current = new AudioContextConstructor(); } catch { /* Audio is optional. */ }
+    }
+    void audioContextRef.current?.resume().catch(() => undefined);
+
+    if ('Notification' in window && Notification.permission === 'default') {
+      void Notification.requestPermission().catch(() => undefined);
+    }
+  }, []);
+
+  const announceFoundWallet = useCallback(() => {
+    const context = audioContextRef.current;
+    if (context) {
+      void context.resume().then(() => {
+        const startedAt = context.currentTime;
+        const gain = context.createGain();
+        gain.gain.setValueAtTime(0.0001, startedAt);
+        gain.gain.exponentialRampToValueAtTime(0.22, startedAt + 0.025);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startedAt + 1.15);
+        gain.connect(context.destination);
+        [659.25, 783.99, 1046.5].forEach((frequency, index) => {
+          const oscillator = context.createOscillator();
+          const noteGain = context.createGain();
+          const noteStart = startedAt + index * 0.18;
+          oscillator.type = 'sine';
+          oscillator.frequency.setValueAtTime(frequency, noteStart);
+          noteGain.gain.setValueAtTime(0.0001, noteStart);
+          noteGain.gain.exponentialRampToValueAtTime(1, noteStart + 0.018);
+          noteGain.gain.exponentialRampToValueAtTime(0.0001, noteStart + 0.34);
+          oscillator.connect(noteGain);
+          noteGain.connect(gain);
+          oscillator.start(noteStart);
+          oscillator.stop(noteStart + 0.36);
+        });
+      }).catch(() => undefined);
+    }
+
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        new Notification(t('notification.title'), {
+          body: t('notification.body'),
+          icon: `${import.meta.env.BASE_URL}brand/tonsuite-icon.jpg`,
+          tag: 'tonsuite-wallet-found',
+        });
+      } catch { /* System notifications are optional. */ }
+    }
+  }, [t]);
+
   const startSearch = useCallback(() => {
     if (suffixError || (engine === 'gpu' && !gpuAvailable)) return;
+    prepareFoundAlerts();
+    setHuntStartedOpen(true);
     stopWorkers();
     setError(''); setEngineNotice(''); setActiveEngine(engine);
     setLiveMessage(t('search.running'));
@@ -272,6 +361,7 @@ export function App() {
             if (otherWorker !== worker) { otherWorker.postMessage({ type: 'stop' }); otherWorker.terminate(); }
           });
           workersRef.current = [worker];
+          announceFoundWallet();
           setScreen('found');
         }
         if (message.type === 'revealed') {
@@ -292,8 +382,8 @@ export function App() {
       return worker;
     });
     workersRef.current = nextWorkers;
-  }, [addressFormat, aggregateProgress, caseSensitive, cleanSuffix, engine,
-    gpuAvailable, locale, stopWorkers, suffixError, t, version, workerPlan]);
+  }, [addressFormat, aggregateProgress, announceFoundWallet, caseSensitive, cleanSuffix, engine,
+    gpuAvailable, locale, prepareFoundAlerts, stopWorkers, suffixError, t, version, workerPlan]);
 
   const cancelSearch = () => { stopWorkers(); setScreen('setup'); };
   const goBack = () => {
@@ -547,9 +637,27 @@ export function App() {
         {screen === 'setup' && setupScreen}{screen === 'searching' && searchingScreen}
         {screen === 'found' && foundScreen}{screen === 'seed-ready' && seedReadyScreen}{screen === 'seed' && seedScreen}
       </main>
+      {huntStartedOpen && <div className="hunt-modal-backdrop" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setHuntStartedOpen(false);
+      }}>
+        <section className="hunt-modal" role="dialog" aria-modal="true" aria-labelledby="hunt-modal-title" aria-describedby="hunt-modal-description">
+          <button ref={huntModalCloseRef} type="button" className="hunt-modal__close" aria-label={t('huntModal.close')}
+            onClick={() => setHuntStartedOpen(false)}><X weight="bold" /></button>
+          <span className="hunt-modal__icon" aria-hidden="true"><Bell weight="fill" /></span>
+          <span className="hunt-modal__eyebrow">{t('huntModal.status')}</span>
+          <h2 id="hunt-modal-title">{t('huntModal.title')}</h2>
+          <p id="hunt-modal-description">{t('huntModal.description')}</p>
+          <div className="hunt-modal__notice"><Bell weight="fill" /><span>{t('huntModal.notification')}</span></div>
+          <a className="primary-button hunt-modal__channel" href="https://t.me/rubikub" target="_blank" rel="noreferrer"
+            onClick={() => setHuntStartedOpen(false)}><TelegramLogo weight="fill" /> {t('huntModal.subscribe')}</a>
+          <button type="button" className="hunt-modal__continue" onClick={() => setHuntStartedOpen(false)}>{t('huntModal.continue')}</button>
+        </section>
+      </div>}
       <footer className="site-footer"><span>© {new Date().getFullYear()} TonSuite</span>
         <a href={locale === 'ru' ? '/privacy/' : '/en/privacy/'}>{t('footer.privacy')}</a>
-        <a href="https://t.me/addstickers/UtyaDuck" target="_blank" rel="noreferrer">{t('footer.utya')}</a></footer>
+        <a href="https://t.me/addstickers/UtyaDuck" target="_blank" rel="noreferrer">{t('footer.utya')}</a>
+        <a href="https://t.me/rub1kub" target="_blank" rel="noreferrer">{t('footer.author')}</a>
+        <a href="https://t.me/rubikub" target="_blank" rel="noreferrer">{t('footer.channel')}</a></footer>
     </div>
   );
 }

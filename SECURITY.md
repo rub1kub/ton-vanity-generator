@@ -15,6 +15,8 @@ Never send a real seed phrase in a bug report.
 - The generator has no backend API, analytics, account system or persistence.
 - Seed phrases are not written to logs, URLs, cookies, Local Storage or
   IndexedDB.
+- Optional system notifications contain only a generic found-wallet message;
+  no address, suffix, mnemonic or key material is sent to the operating system.
 - Sticker, font and JavaScript assets are served from the same origin.
 - Closing or restarting the page destroys the only in-memory copy of an
   unsaved generated wallet.

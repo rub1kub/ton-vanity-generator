@@ -14,6 +14,8 @@ entirely in the browser at [`tonsuite.org/generator/`](https://tonsuite.org/gene
   TON address derivation inside the same local workers.
 - Keeps generation, candidate keys and recovery words on the user's device.
 - Makes no analytics or wallet API requests.
+- Plays a local Web Audio chime and, when the user grants browser permission,
+  shows a system notification after a matching wallet is found.
 
 ## Important limits
 
@@ -55,6 +57,7 @@ Static output is written to `dist/`.
 - Every winning GPU candidate is independently re-derived from its mnemonic on
   the CPU before the address or recovery phrase is accepted.
 - Each worker loops independently and sends only aggregate progress to the UI.
+- Found-wallet notifications contain no address, mnemonic or other secret.
 - Telegram TGS animations are self-hosted and rendered with the light Lottie
   player; no Telegram or FStik request is made at runtime.
 
