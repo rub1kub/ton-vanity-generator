@@ -10,8 +10,13 @@ entirely in the browser at [`tonsuite.org/generator/`](https://tonsuite.org/gene
 - Supports non-bounceable `UQ…` and bounceable `EQ…` display formats.
 - Uses the current TEP-3 12-word BIP39 format and `m/44'/607'/0'` path.
 - Runs work in multiple dedicated Web Workers.
-- Can run several parallel WebGPU PBKDF2 pipelines while completing canonical
-  TON address derivation inside the same local workers.
+- Can pause, resume and change CPU/GPU power without losing the attempt count.
+- Offers one compact, local auto-tune control that benchmarks the full pipeline
+  and applies the fastest tested CPU/GPU configuration for that browser.
+- Runs several parallel WebGPU pipelines, including BIP39 PBKDF2 and the
+  complete SLIP-0010 `m/44'/607'/0'` derivation in WGSL.
+- Detects mobile browsers, hides WebGPU there, and exposes every safe CPU count
+  up to the browser-reported ceiling (8 on mobile, 32 on desktop).
 - Keeps generation, candidate keys and recovery words on the user's device.
 - Makes no analytics or wallet API requests.
 - Plays a local Web Audio chime and, when the user grants browser permission,
@@ -49,13 +54,17 @@ Static output is written to `dist/`.
 ## Architecture
 
 - React + TypeScript + Vite for the UI.
-- `@scure/bip39` creates standards-compatible 12-word mnemonics.
-- WebGPU accelerates BIP39 PBKDF2-HMAC-SHA512 in audited, self-tested batches.
-- `@noble/hashes` and `@noble/curves` perform fast SLIP-0010 and Ed25519
-  expansion; `@ton/crypto` remains the correctness-compatible fallback.
-- `@ton/ton` derives the canonical W5/v4R2 contract address.
+- A specialized CSPRNG-backed 128-bit BIP39 encoder creates 12-word English
+  mnemonics and is differential-tested against `@scure/bip39`.
+- WebGPU accelerates BIP39 PBKDF2-HMAC-SHA512 plus SLIP-0010 in self-tested
+  batches. The original BIP39 root-seed API and known-answer test remain.
+- The ordinary `libsodium-wrappers` WASM build accelerates Ed25519 public-key
+  derivation, with an RFC 8032 self-test and automatic noble fallback.
+- Canonical W5/v4R2 contract code is cached once; only the small data Cell and
+  StateInit address are built for each candidate.
 - Every winning GPU candidate is independently re-derived from its mnemonic on
-  the CPU before the address or recovery phrase is accepted.
+  the CPU before the address or recovery phrase is accepted. CPU winners are
+  independently re-derived through the canonical path as well.
 - Each worker loops independently and sends only aggregate progress to the UI.
 - Found-wallet notifications contain no address, mnemonic or other secret.
 - Telegram TGS animations are self-hosted and rendered with the light Lottie

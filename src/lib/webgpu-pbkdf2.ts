@@ -3,6 +3,7 @@ import pbkdf2Shader from './webgpu-pbkdf2.wgsl?raw';
 export const BIP39_PBKDF2_ITERATIONS = 2_048;
 export const BIP39_SEED_BYTES = 64;
 export const BIP39_MNEMONIC_WORDS = 12;
+export const TON_PATH_SEED_BYTES = 32;
 
 const MNEMONIC_STRIDE_BYTES = 128;
 const WORKGROUP_SIZE = 64;
@@ -13,6 +14,8 @@ const SELF_TEST_MNEMONIC =
 const SELF_TEST_SEED_HEX =
   '5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1' +
   '9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4';
+const SELF_TEST_TON_PATH_SEED_HEX =
+  'b477ef5ed17fb8a2b8faddd7a9835a227243a82c70b190c7af4896155aa7df9f';
 
 // WebGPU constants are intentionally kept local so this module type-checks
 // without adding a runtime dependency on @webgpu/types.
@@ -242,7 +245,10 @@ function adapterInfo(adapter: any): WebGpuAdapterInfo | undefined {
   };
 }
 
-async function compilePipeline(device: any): Promise<any> {
+async function compilePipelines(device: any): Promise<{
+  rootSeed: any;
+  tonPathSeed: any;
+}> {
   const shaderModule = device.createShaderModule({
     label: 'TON Suite BIP39 PBKDF2-HMAC-SHA512',
     code: pbkdf2Shader,
@@ -263,15 +269,22 @@ async function compilePipeline(device: any): Promise<any> {
     }
   }
 
-  const descriptor = {
-    label: 'BIP39 PBKDF2-HMAC-SHA512 pipeline',
-    layout: 'auto',
-    compute: { module: shaderModule, entryPoint: 'main' },
+  const createPipeline = (entryPoint: 'main' | 'ton_main', label: string) => {
+    const descriptor = {
+      label,
+      layout: 'auto',
+      compute: { module: shaderModule, entryPoint },
+    };
+    return typeof device.createComputePipelineAsync === 'function'
+      ? device.createComputePipelineAsync(descriptor)
+      : device.createComputePipeline(descriptor);
   };
 
-  return typeof device.createComputePipelineAsync === 'function'
-    ? device.createComputePipelineAsync(descriptor)
-    : device.createComputePipeline(descriptor);
+  const [rootSeed, tonPathSeed] = await Promise.all([
+    createPipeline('main', 'BIP39 PBKDF2-HMAC-SHA512 pipeline'),
+    createPipeline('ton_main', 'BIP39 + TON SLIP-0010 pipeline'),
+  ]);
+  return { rootSeed, tonPathSeed };
 }
 
 async function wipeAndDestroyBuffers(
@@ -312,7 +325,8 @@ export class WebGpuPbkdf2Accelerator {
   private constructor(
     private readonly adapter: any,
     private readonly device: any,
-    private readonly pipeline: any,
+    private readonly rootSeedPipeline: any,
+    private readonly tonPathSeedPipeline: any,
     maxBatchSize: number,
     selfTestPassed: boolean,
   ) {
@@ -356,7 +370,7 @@ export class WebGpuPbkdf2Accelerator {
     let accelerator: WebGpuPbkdf2Accelerator | undefined;
 
     try {
-      const pipeline = await compilePipeline(device);
+      const pipelines = await compilePipelines(device);
       const storageLimit = Number(
         device.limits?.maxStorageBufferBindingSize ?? Number.MAX_SAFE_INTEGER,
       );
@@ -376,7 +390,8 @@ export class WebGpuPbkdf2Accelerator {
       accelerator = new WebGpuPbkdf2Accelerator(
         adapter,
         device,
-        pipeline,
+        pipelines.rootSeed,
+        pipelines.tonPathSeed,
         maxBatchSize,
         false,
       );
@@ -401,6 +416,22 @@ export class WebGpuPbkdf2Accelerator {
   }
 
   async deriveSeeds(mnemonics: readonly string[]): Promise<Uint8Array[]> {
+    return this.deriveInChunks(mnemonics, 'root');
+  }
+
+  /**
+   * Fused BIP39 PBKDF2 + SLIP-0010 m/44'/607'/0' derivation. Only the final
+   * 32-byte Ed25519 seed crosses the GPU/CPU boundary; intermediate BIP39
+   * roots and chain codes remain in shader-local memory.
+   */
+  async deriveTonSeeds(mnemonics: readonly string[]): Promise<Uint8Array[]> {
+    return this.deriveInChunks(mnemonics, 'ton');
+  }
+
+  private async deriveInChunks(
+    mnemonics: readonly string[],
+    output: 'root' | 'ton',
+  ): Promise<Uint8Array[]> {
     this.assertUsable();
     if (mnemonics.length === 0) return [];
 
@@ -410,7 +441,7 @@ export class WebGpuPbkdf2Accelerator {
     try {
       for (let offset = 0; offset < mnemonics.length; offset += maxBatchSize) {
         const chunk = mnemonics.slice(offset, offset + maxBatchSize);
-        seeds.push(...(await this.deriveChunk(chunk)));
+        seeds.push(...(await this.deriveChunk(chunk, output)));
       }
       return seeds;
     } catch (error) {
@@ -457,7 +488,9 @@ export class WebGpuPbkdf2Accelerator {
   async runSelfTest(): Promise<void> {
     this.assertUsable();
     const expected = hexToBytes(SELF_TEST_SEED_HEX);
+    const expectedTonSeed = hexToBytes(SELF_TEST_TON_PATH_SEED_HEX);
     let actual: Uint8Array | undefined;
+    let actualTonSeed: Uint8Array | undefined;
 
     try {
       [actual] = await this.deriveSeeds([SELF_TEST_MNEMONIC]);
@@ -467,9 +500,18 @@ export class WebGpuPbkdf2Accelerator {
           'self-test',
         );
       }
+      [actualTonSeed] = await this.deriveTonSeeds([SELF_TEST_MNEMONIC]);
+      if (!actualTonSeed || !bytesEqual(actualTonSeed, expectedTonSeed)) {
+        throw new WebGpuPbkdf2Error(
+          'WebGPU TON SLIP-0010 failed its known-answer test.',
+          'self-test',
+        );
+      }
     } finally {
       actual?.fill(0);
+      actualTonSeed?.fill(0);
       expected.fill(0);
+      expectedTonSeed.fill(0);
     }
   }
 
@@ -500,10 +542,12 @@ export class WebGpuPbkdf2Accelerator {
 
   private async deriveChunk(
     mnemonics: readonly string[],
+    output: 'root' | 'ton',
   ): Promise<Uint8Array[]> {
     const packed = packMnemonicBatch(mnemonics);
     const inputSize = packed.words.byteLength;
-    const outputSize = packed.count * BIP39_SEED_BYTES;
+    const seedBytes = output === 'ton' ? TON_PATH_SEED_BYTES : BIP39_SEED_BYTES;
+    const outputSize = packed.count * seedBytes;
     const params = new Uint32Array([packed.count, 0, 0, 0]);
 
     let inputBuffer: any;
@@ -542,7 +586,9 @@ export class WebGpuPbkdf2Accelerator {
       this.device.queue.writeBuffer(paramsBuffer, 0, params);
 
       const bindGroup = this.device.createBindGroup({
-        layout: this.pipeline.getBindGroupLayout(0),
+        layout: (output === 'ton'
+          ? this.tonPathSeedPipeline
+          : this.rootSeedPipeline).getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: inputBuffer } },
           { binding: 1, resource: { buffer: outputBuffer } },
@@ -556,7 +602,9 @@ export class WebGpuPbkdf2Accelerator {
       const pass = commandEncoder.beginComputePass({
         label: 'BIP39 PBKDF2-HMAC-SHA512',
       });
-      pass.setPipeline(this.pipeline);
+      pass.setPipeline(output === 'ton'
+        ? this.tonPathSeedPipeline
+        : this.rootSeedPipeline);
       pass.setBindGroup(0, bindGroup);
       pass.dispatchWorkgroups(Math.ceil(packed.count / WORKGROUP_SIZE));
       pass.end();
@@ -579,8 +627,8 @@ export class WebGpuPbkdf2Accelerator {
 
       const seeds = Array.from({ length: packed.count }, (_, index) =>
         rawOutput!.slice(
-          index * BIP39_SEED_BYTES,
-          (index + 1) * BIP39_SEED_BYTES,
+          index * seedBytes,
+          (index + 1) * seedBytes,
         ),
       );
       return seeds;

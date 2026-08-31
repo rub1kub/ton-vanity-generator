@@ -1,7 +1,7 @@
 import {
   ArrowLeft, Bell, Check, CheckCircle, Copy, Cpu, Eye, EyeSlash, GithubLogo,
-  Globe, GraphicsCard, Info, LockKey, MagicWand, ShieldCheck, Sparkle, Stop,
-  TelegramLogo, X,
+  Globe, GraphicsCard, Info, LockKey, MagicWand, Pause, Play, ShieldCheck,
+  SlidersHorizontal, Sparkle, Stop, TelegramLogo, X,
 } from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { TgsSticker, type StickerName } from './components/TgsSticker';
@@ -13,6 +13,14 @@ import {
   createSearchWorkerPlan, getBrowserConcurrencyPolicy, resolveWorkerCount,
   type ConcurrencySelection,
 } from './lib/concurrency';
+import {
+  collectDeviceProfile, recommendDeviceSettings,
+  type DeviceProfile, type DeviceSettingsRecommendation,
+} from './lib/device-profile';
+import {
+  createPerformanceCalibrationPlan, selectFastestCalibrationResult,
+  type PerformanceCalibrationResult, type PerformanceCalibrationStep,
+} from './lib/performance-calibration';
 import type {
   AddressFormat, ComputeEngine, FoundCandidate, FoundWallet, SearchOptions,
   SearchProgress, WalletVersion, WorkerResponse,
@@ -22,6 +30,31 @@ type Screen = 'setup' | 'searching' | 'found' | 'seed-ready' | 'seed';
 type CopyTarget = 'address' | 'seed' | null;
 
 const PRESETS = ['GRAM', 'MONEY', 'TON', 'DUCK'];
+const GPU_PIPELINE_STABILITY_CAP = 16;
+
+function maximumGpuPipelineCount(
+  policy: ReturnType<typeof getBrowserConcurrencyPolicy>,
+): number {
+  // GPU workers spend much of their time waiting for a dispatch. Profiling on
+  // an 8-thread/RTX 5060 system peaked at 16 lanes, so GPU concurrency may
+  // profitably exceed the logical CPU count without changing CPU limits.
+  return Math.min(GPU_PIPELINE_STABILITY_CAP, Math.max(1, policy.maximumWorkerCount * 2));
+}
+
+function resolveEngineWorkerCount(
+  engine: ComputeEngine,
+  selection: ConcurrencySelection,
+  policy: ReturnType<typeof getBrowserConcurrencyPolicy>,
+): number {
+  if (engine === 'cpu') return resolveWorkerCount(selection, policy);
+  if (selection === 'auto') {
+    return Math.min(8, Math.max(1, Math.ceil(policy.maximumWorkerCount / 2)));
+  }
+  const maximum = maximumGpuPipelineCount(policy);
+  if (selection === 'maximum') return maximum;
+  if (!Number.isFinite(selection)) return Math.min(8, maximum);
+  return Math.min(maximum, Math.max(1, Math.floor(selection)));
+}
 
 function expectedAttempts(suffix: string, caseSensitive: boolean): number {
   if (!suffix) return 0;
@@ -85,6 +118,7 @@ export function App() {
     [locale],
   );
   const concurrencyPolicy = useMemo(() => getBrowserConcurrencyPolicy(), []);
+  const [deviceProfile, setDeviceProfile] = useState<DeviceProfile | null>(null);
   const [screen, setScreen] = useState<Screen>('setup');
   const [suffix, setSuffix] = useState('GRAM');
   const [version, setVersion] = useState<WalletVersion>('w5');
@@ -96,7 +130,9 @@ export function App() {
   const [activeEngine, setActiveEngine] = useState<ComputeEngine>('cpu');
   const [engineNotice, setEngineNotice] = useState('');
   const [liveMessage, setLiveMessage] = useState('');
-  const [gpuAvailable] = useState(() => typeof navigator !== 'undefined' && 'gpu' in navigator);
+  const gpuApiAvailable = useMemo(() => (
+    typeof navigator !== 'undefined' && 'gpu' in navigator && concurrencyPolicy.gpuAllowed
+  ), [concurrencyPolicy.gpuAllowed]);
   const [progress, setProgress] = useState<SearchProgress>({
     attempts: 0, elapsedMs: 0, attemptsPerSecond: 0, sampleAddress: '',
   });
@@ -107,24 +143,75 @@ export function App() {
   const [seedVisible, setSeedVisible] = useState(false);
   const [revealPending, setRevealPending] = useState(false);
   const [huntStartedOpen, setHuntStartedOpen] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [powerOpen, setPowerOpen] = useState(false);
+  const [powerEngine, setPowerEngine] = useState<ComputeEngine>('cpu');
+  const [powerSelection, setPowerSelection] = useState<ConcurrencySelection>('auto');
+  const [activeWorkerCount, setActiveWorkerCount] = useState(0);
+  const [calibrationRunning, setCalibrationRunning] = useState(false);
+  const [calibrationStep, setCalibrationStep] = useState<{
+    current: number; total: number; engine: ComputeEngine; count: number;
+  } | null>(null);
+  const [calibrationResult, setCalibrationResult] = useState<PerformanceCalibrationResult | null>(null);
+  const [calibrationFailed, setCalibrationFailed] = useState(false);
 
   const workersRef = useRef<Worker[]>([]);
   const winningWorkerRef = useRef<Worker | null>(null);
   const workerProgressRef = useRef(new Map<number, SearchProgress>());
   const workerEngineRef = useRef(new Map<number, ComputeEngine>());
-  const searchStartedAtRef = useRef(0);
+  const searchEpochRef = useRef(0);
+  const baselineAttemptsRef = useRef(0);
+  const baselineElapsedMsRef = useRef(0);
+  const activeSegmentStartedAtRef = useRef(0);
+  const latestProgressRef = useRef<SearchProgress>({
+    attempts: 0, elapsedMs: 0, attemptsPerSecond: 0, sampleAddress: '',
+  });
+  const isPausedRef = useRef(false);
   const copyTimerRef = useRef<number | undefined>(undefined);
   const progressAnnouncementRef = useRef(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const huntModalCloseRef = useRef<HTMLButtonElement | null>(null);
+  const calibrationWorkersRef = useRef<Worker[]>([]);
+  const calibrationEpochRef = useRef(0);
+  const calibrationFinishRef = useRef<(() => void) | null>(null);
+  const deviceRecommendation = useMemo<DeviceSettingsRecommendation | null>(
+    () => deviceProfile ? recommendDeviceSettings(deviceProfile) : null,
+    [deviceProfile],
+  );
+  const calibrationPlan = useMemo(
+    () => deviceProfile && deviceRecommendation
+      ? createPerformanceCalibrationPlan({
+          profile: deviceProfile,
+          recommendation: deviceRecommendation,
+          maxCpuWorkers: concurrencyPolicy.maximumWorkerCount,
+        })
+      : [],
+    [concurrencyPolicy.maximumWorkerCount, deviceProfile, deviceRecommendation],
+  );
+  const calibrationDurationSeconds = Math.ceil(
+    calibrationPlan.reduce((sum, step) => sum + step.durationMs, 0) / 1_000,
+  );
+  const gpuAvailable = deviceProfile
+    ? deviceProfile.webgpu.adapterAvailable && !deviceProfile.mobile
+    : gpuApiAvailable;
 
   const cleanSuffix = suffix.trim();
-  const workerCount = resolveWorkerCount(concurrencySelection, concurrencyPolicy);
-  const workerPlan = useMemo(
-    () => createSearchWorkerPlan(engine, workerCount),
-    [engine, workerCount],
+  const workerCount = resolveEngineWorkerCount(engine, concurrencySelection, concurrencyPolicy);
+  const workerCountOptions = engine === 'gpu'
+    ? Array.from({ length: maximumGpuPipelineCount(concurrencyPolicy) }, (_, index) => index + 1)
+    : concurrencyPolicy.workerCountOptions;
+  const autoWorkerCount = resolveEngineWorkerCount(engine, 'auto', concurrencyPolicy);
+  const maximumWorkerCount = resolveEngineWorkerCount(engine, 'maximum', concurrencyPolicy);
+  const powerWorkerCount = resolveEngineWorkerCount(
+    powerEngine,
+    powerSelection,
+    concurrencyPolicy,
   );
-  const searchWorkerCount = workerPlan.length;
+  const powerWorkerCountOptions = powerEngine === 'gpu'
+    ? Array.from({ length: maximumGpuPipelineCount(concurrencyPolicy) }, (_, index) => index + 1)
+    : concurrencyPolicy.workerCountOptions;
+  const powerAutoWorkerCount = resolveEngineWorkerCount(powerEngine, 'auto', concurrencyPolicy);
+  const powerMaximumWorkerCount = resolveEngineWorkerCount(powerEngine, 'maximum', concurrencyPolicy);
   const suffixError = useMemo(() => {
     if (!cleanSuffix) return t('suffix.required');
     if (!/^[A-Za-z0-9_-]+$/.test(cleanSuffix)) return t('suffix.characters');
@@ -156,6 +243,17 @@ export function App() {
   }, [locale]);
 
   useEffect(() => {
+    let cancelled = false;
+    void collectDeviceProfile().then((profile) => {
+      if (cancelled) return;
+      setDeviceProfile(profile);
+    }).catch(() => {
+      if (!cancelled) setDeviceProfile(null);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
     const heading = document.querySelector<HTMLElement>('#generator-main h1');
     window.requestAnimationFrame(() => heading?.focus());
   }, [screen]);
@@ -185,7 +283,13 @@ export function App() {
     return t('eta.years', { count: Math.round(days / 365) });
   }, [t]);
 
+  const updateProgress = useCallback((nextProgress: SearchProgress) => {
+    latestProgressRef.current = nextProgress;
+    setProgress(nextProgress);
+  }, []);
+
   const stopWorkers = useCallback(() => {
+    searchEpochRef.current += 1;
     workersRef.current.forEach((worker) => { worker.postMessage({ type: 'stop' }); worker.terminate(); });
     workersRef.current = [];
     winningWorkerRef.current = null;
@@ -193,7 +297,43 @@ export function App() {
     workerEngineRef.current.clear();
   }, []);
 
+  const terminateCalibrationWorkers = useCallback(() => {
+    calibrationWorkersRef.current.forEach((worker) => {
+      worker.postMessage({ type: 'stop' });
+      window.setTimeout(() => worker.terminate(), 50);
+    });
+    calibrationWorkersRef.current = [];
+  }, []);
+
+  const cancelPerformanceCalibration = useCallback(() => {
+    calibrationEpochRef.current += 1;
+    calibrationFinishRef.current?.();
+    calibrationFinishRef.current = null;
+    terminateCalibrationWorkers();
+    setCalibrationRunning(false);
+    setCalibrationStep(null);
+  }, [terminateCalibrationWorkers]);
+
   useEffect(() => stopWorkers, [stopWorkers]);
+  useEffect(() => () => {
+    calibrationEpochRef.current += 1;
+    calibrationFinishRef.current?.();
+    calibrationFinishRef.current = null;
+    terminateCalibrationWorkers();
+  }, [terminateCalibrationWorkers]);
+
+  useEffect(() => {
+    if (!calibrationRunning) return;
+    const cancelWhenHidden = () => {
+      if (document.visibilityState === 'hidden') cancelPerformanceCalibration();
+    };
+    document.addEventListener('visibilitychange', cancelWhenHidden);
+    window.addEventListener('pagehide', cancelPerformanceCalibration);
+    return () => {
+      document.removeEventListener('visibilitychange', cancelWhenHidden);
+      window.removeEventListener('pagehide', cancelPerformanceCalibration);
+    };
+  }, [calibrationRunning, cancelPerformanceCalibration]);
 
   useEffect(() => () => {
     void audioContextRef.current?.close().catch(() => undefined);
@@ -228,12 +368,18 @@ export function App() {
   }, [huntStartedOpen]);
 
   useEffect(() => {
-    if (screen !== 'searching') return;
+    if (screen !== 'searching' || isPaused) return;
     const timer = window.setInterval(() => {
-      setProgress((current) => ({ ...current, elapsedMs: Date.now() - searchStartedAtRef.current }));
+      const elapsedMs = baselineElapsedMsRef.current
+        + Math.max(0, Date.now() - activeSegmentStartedAtRef.current);
+      setProgress((current) => {
+        const next = { ...current, elapsedMs };
+        latestProgressRef.current = next;
+        return next;
+      });
     }, 250);
     return () => window.clearInterval(timer);
-  }, [screen]);
+  }, [isPaused, screen]);
 
   useEffect(() => {
     if (screen !== 'found' && screen !== 'seed-ready' && screen !== 'seed') return;
@@ -246,18 +392,22 @@ export function App() {
     const values = [...workerProgressRef.current.values()];
     if (!values.length) return;
     const latest = values.reduce((left, right) => right.elapsedMs > left.elapsedMs ? right : left);
-    setProgress({
-      attempts: values.reduce((sum, item) => sum + item.attempts, 0),
+    const attempts = baselineAttemptsRef.current
+      + values.reduce((sum, item) => sum + item.attempts, 0);
+    const attemptsPerSecond = values.reduce((sum, item) => sum + item.attemptsPerSecond, 0);
+    updateProgress({
+      attempts,
       attemptsPerSecond: values.reduce((sum, item) => sum + item.attemptsPerSecond, 0),
-      elapsedMs: Date.now() - searchStartedAtRef.current,
+      elapsedMs: baselineElapsedMsRef.current
+        + Math.max(0, Date.now() - activeSegmentStartedAtRef.current),
       sampleAddress: latest.sampleAddress,
     });
     const now = Date.now();
     if (now - progressAnnouncementRef.current >= 4_000) {
-      setLiveMessage(`${compactNumber(values.reduce((sum, item) => sum + item.attempts, 0), locale)} · ${compactNumber(values.reduce((sum, item) => sum + item.attemptsPerSecond, 0), locale)}/s`);
+      setLiveMessage(`${compactNumber(attempts, locale)} · ${compactNumber(attemptsPerSecond, locale)}/s`);
       progressAnnouncementRef.current = now;
     }
-  }, [locale]);
+  }, [locale, updateProgress]);
 
   const prepareFoundAlerts = useCallback(() => {
     const AudioContextConstructor = window.AudioContext
@@ -310,35 +460,69 @@ export function App() {
     }
   }, [t]);
 
-  const startSearch = useCallback(() => {
-    if (suffixError || (engine === 'gpu' && !gpuAvailable)) return;
-    prepareFoundAlerts();
-    setHuntStartedOpen(true);
+  const snapshotSearchProgress = useCallback((): SearchProgress => {
+    const values = [...workerProgressRef.current.values()];
+    const latest = values.length
+      ? values.reduce((left, right) => right.elapsedMs > left.elapsedMs ? right : left)
+      : latestProgressRef.current;
+    return {
+      attempts: baselineAttemptsRef.current
+        + values.reduce((sum, item) => sum + item.attempts, 0),
+      attemptsPerSecond: values.reduce((sum, item) => sum + item.attemptsPerSecond, 0),
+      elapsedMs: baselineElapsedMsRef.current + (
+        activeSegmentStartedAtRef.current > 0
+          ? Math.max(0, Date.now() - activeSegmentStartedAtRef.current)
+          : 0
+      ),
+      sampleAddress: latest.sampleAddress,
+    };
+  }, []);
+
+  const preserveSearchProgressAndStop = useCallback((): SearchProgress => {
+    const snapshot = snapshotSearchProgress();
+    baselineAttemptsRef.current = snapshot.attempts;
+    baselineElapsedMsRef.current = snapshot.elapsedMs;
+    activeSegmentStartedAtRef.current = 0;
+    const pausedSnapshot = { ...snapshot, attemptsPerSecond: 0 };
+    updateProgress(pausedSnapshot);
     stopWorkers();
-    setError(''); setEngineNotice(''); setActiveEngine(engine);
-    setLiveMessage(t('search.running'));
-    progressAnnouncementRef.current = Date.now();
-    setFoundCandidate(null); setFoundWallet(null); setRevealPending(false);
-    setSeedVisible(false); setCopyTarget(null);
-    setProgress({ attempts: 0, elapsedMs: 0, attemptsPerSecond: 0, sampleAddress: '' });
-    searchStartedAtRef.current = Date.now();
-    setScreen('searching');
+    return pausedSnapshot;
+  }, [snapshotSearchProgress, stopWorkers, updateProgress]);
+
+  const launchWorkers = useCallback((
+    requestedEngine: ComputeEngine,
+    requestedSelection: ConcurrencySelection,
+  ) => {
+    const nextEngine: ComputeEngine = requestedEngine === 'gpu'
+      && gpuAvailable && concurrencyPolicy.gpuAllowed ? 'gpu' : 'cpu';
+    const nextWorkerCount = resolveEngineWorkerCount(
+      nextEngine,
+      requestedSelection,
+      concurrencyPolicy,
+    );
+    const nextWorkerPlan = createSearchWorkerPlan(nextEngine, nextWorkerCount);
+    const epoch = searchEpochRef.current + 1;
+    searchEpochRef.current = epoch;
+    activeSegmentStartedAtRef.current = Date.now();
+    setActiveEngine(nextEngine);
+    setActiveWorkerCount(nextWorkerPlan.length);
 
     const baseOptions: SearchOptions = {
-      suffix: cleanSuffix, version, addressFormat, caseSensitive, engine, locale,
+      suffix: cleanSuffix, version, addressFormat, caseSensitive, engine: nextEngine, locale,
     };
 
-    const nextWorkers = workerPlan.map((workerEngine, workerId) => {
+    const nextWorkers = nextWorkerPlan.map((workerEngine, workerId) => {
       const worker = new Worker(new URL('./workers/vanity.worker.ts', import.meta.url), {
         type: 'module', name: `ton-vanity-${workerEngine}-${workerId}`,
       });
       worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        if (epoch !== searchEpochRef.current) return;
         const message = event.data;
         if (message.type === 'engine') {
           workerEngineRef.current.set(message.workerId, message.engine);
           const reportedEngines = [...workerEngineRef.current.values()];
           if (reportedEngines.includes('gpu')) setActiveEngine('gpu');
-          else if (workerEngineRef.current.size === workerPlan.length) setActiveEngine('cpu');
+          else if (workerEngineRef.current.size === nextWorkerPlan.length) setActiveEngine('cpu');
           if (message.fallbackReason) setEngineNotice(t('error.gpuFallback'));
         }
         if (message.type === 'progress') {
@@ -354,8 +538,11 @@ export function App() {
             attempts: message.candidate.attempts, attemptsPerSecond: 0,
             elapsedMs: message.candidate.elapsedMs, sampleAddress: message.candidate.address,
           });
-          const totalAttempts = [...workerProgressRef.current.values()].reduce((sum, item) => sum + item.attempts, 0);
-          setFoundCandidate({ ...message.candidate, attempts: totalAttempts, elapsedMs: Date.now() - searchStartedAtRef.current });
+          const totalAttempts = baselineAttemptsRef.current
+            + [...workerProgressRef.current.values()].reduce((sum, item) => sum + item.attempts, 0);
+          const elapsedMs = baselineElapsedMsRef.current
+            + Math.max(0, Date.now() - activeSegmentStartedAtRef.current);
+          setFoundCandidate({ ...message.candidate, attempts: totalAttempts, elapsedMs });
           setLiveMessage(t('found.status'));
           workersRef.current.forEach((otherWorker) => {
             if (otherWorker !== worker) { otherWorker.postMessage({ type: 'stop' }); otherWorker.terminate(); }
@@ -373,7 +560,10 @@ export function App() {
           setError(message.message || t('error.generator')); setScreen('setup'); stopWorkers();
         }
       };
-      worker.onerror = () => { setError(t('error.generator')); setScreen('setup'); stopWorkers(); };
+      worker.onerror = () => {
+        if (epoch !== searchEpochRef.current) return;
+        setError(t('error.generator')); setScreen('setup'); stopWorkers();
+      };
       worker.postMessage({
         type: 'start',
         options: { ...baseOptions, engine: workerEngine },
@@ -382,10 +572,201 @@ export function App() {
       return worker;
     });
     workersRef.current = nextWorkers;
-  }, [addressFormat, aggregateProgress, announceFoundWallet, caseSensitive, cleanSuffix, engine,
-    gpuAvailable, locale, prepareFoundAlerts, stopWorkers, suffixError, t, version, workerPlan]);
+  }, [addressFormat, aggregateProgress, announceFoundWallet, caseSensitive, cleanSuffix,
+    concurrencyPolicy, gpuAvailable, locale, stopWorkers, t, version]);
 
-  const cancelSearch = () => { stopWorkers(); setScreen('setup'); };
+  const benchmarkPerformanceStep = useCallback((
+    step: PerformanceCalibrationStep,
+    epoch: number,
+  ): Promise<PerformanceCalibrationResult> => new Promise((resolve) => {
+    const latestProgress = new Map<number, SearchProgress>();
+    const reportedEngines = new Map<number, ComputeEngine>();
+    let baselineProgress = new Map<number, SearchProgress>();
+    const workers: Worker[] = [];
+    let fallback = false;
+    let failed = false;
+    let finished = false;
+    let measurementStarted = false;
+    let startupTimeoutId = 0;
+    let measurementTimeoutId = 0;
+
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(startupTimeoutId);
+      window.clearTimeout(measurementTimeoutId);
+      workers.forEach((worker) => {
+        worker.postMessage({ type: 'stop' });
+        window.setTimeout(() => worker.terminate(), 50);
+      });
+      if (calibrationWorkersRef.current === workers) calibrationWorkersRef.current = [];
+      if (calibrationFinishRef.current === finish) calibrationFinishRef.current = null;
+
+      let attemptsPerSecond = 0;
+      let allLanesMeasured = measurementStarted
+        && baselineProgress.size === step.count
+        && latestProgress.size === step.count
+        && reportedEngines.size === step.count;
+      for (let workerId = 0; workerId < step.count; workerId += 1) {
+        const baseline = baselineProgress.get(workerId);
+        const latest = latestProgress.get(workerId);
+        const reportedEngine = reportedEngines.get(workerId);
+        if (!baseline || !latest || reportedEngine !== step.engine) {
+          allLanesMeasured = false;
+          continue;
+        }
+        const attemptDelta = latest.attempts - baseline.attempts;
+        const elapsedDelta = latest.elapsedMs - baseline.elapsedMs;
+        if (attemptDelta <= 0 || elapsedDelta <= 0) {
+          allLanesMeasured = false;
+          continue;
+        }
+        attemptsPerSecond += (attemptDelta * 1_000) / elapsedDelta;
+      }
+      resolve({
+        engine: step.engine,
+        count: step.count,
+        attemptsPerSecond,
+        valid: epoch === calibrationEpochRef.current
+          && !failed && !fallback && allLanesMeasured && attemptsPerSecond > 0,
+        fallback,
+        failed,
+      });
+    };
+
+    const startMeasurementWhenReady = () => {
+      if (measurementStarted || finished) return;
+      if (reportedEngines.size !== step.count || latestProgress.size !== step.count) return;
+      for (let workerId = 0; workerId < step.count; workerId += 1) {
+        if (reportedEngines.get(workerId) !== step.engine) {
+          fallback = true;
+          finish();
+          return;
+        }
+      }
+      measurementStarted = true;
+      baselineProgress = new Map(latestProgress);
+      window.clearTimeout(startupTimeoutId);
+      measurementTimeoutId = window.setTimeout(finish, step.durationMs);
+    };
+
+    calibrationFinishRef.current = finish;
+    startupTimeoutId = window.setTimeout(() => {
+      failed = true;
+      finish();
+    }, Math.max(6_000, step.durationMs * 3));
+    const benchmarkOptions: SearchOptions = {
+      // Eight exact underscores are valid TON base64url characters but have a
+      // negligible hit probability during a few-second calibration sample.
+      suffix: '________',
+      version,
+      addressFormat,
+      caseSensitive: true,
+      engine: step.engine,
+      locale,
+    };
+
+    calibrationWorkersRef.current = workers;
+    try {
+      for (let workerId = 0; workerId < step.count; workerId += 1) {
+        const worker = new Worker(new URL('./workers/vanity.worker.ts', import.meta.url), {
+          type: 'module',
+          name: `ton-calibration-${step.engine}-${workerId}`,
+        });
+        worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+          if (finished || epoch !== calibrationEpochRef.current) return;
+          const message = event.data;
+          if (message.type === 'engine') {
+            reportedEngines.set(message.workerId, message.engine);
+            if (message.engine !== step.engine) fallback = true;
+            startMeasurementWhenReady();
+          }
+          if (message.type === 'progress') {
+            latestProgress.set(message.workerId, message.progress);
+            startMeasurementWhenReady();
+          }
+          if (message.type === 'error' || message.type === 'candidate') {
+            failed = true;
+            finish();
+          }
+        };
+        worker.onerror = () => {
+          failed = true;
+          finish();
+        };
+        workers.push(worker);
+        worker.postMessage({ type: 'start', options: benchmarkOptions, workerId });
+      }
+    } catch {
+      failed = true;
+      finish();
+    }
+  }), [addressFormat, locale, version]);
+
+  const startSearch = useCallback(() => {
+    const nextEngine = concurrencyPolicy.gpuAllowed ? engine : 'cpu';
+    if (suffixError || (nextEngine === 'gpu' && !gpuAvailable)) return;
+    cancelPerformanceCalibration();
+    prepareFoundAlerts();
+    setHuntStartedOpen(true);
+    stopWorkers();
+    baselineAttemptsRef.current = 0;
+    baselineElapsedMsRef.current = 0;
+    activeSegmentStartedAtRef.current = 0;
+    isPausedRef.current = false;
+    setIsPaused(false); setPowerOpen(false);
+    setError(''); setEngineNotice('');
+    setLiveMessage(t('search.running'));
+    progressAnnouncementRef.current = Date.now();
+    setFoundCandidate(null); setFoundWallet(null); setRevealPending(false);
+    setSeedVisible(false); setCopyTarget(null);
+    updateProgress({ attempts: 0, elapsedMs: 0, attemptsPerSecond: 0, sampleAddress: '' });
+    setScreen('searching');
+    launchWorkers(nextEngine, concurrencySelection);
+  }, [cancelPerformanceCalibration, concurrencyPolicy.gpuAllowed, concurrencySelection, engine,
+    gpuAvailable, launchWorkers, prepareFoundAlerts, stopWorkers, suffixError, t, updateProgress]);
+
+  const pauseSearch = useCallback(() => {
+    if (isPausedRef.current) return;
+    preserveSearchProgressAndStop();
+    isPausedRef.current = true;
+    setIsPaused(true);
+    setLiveMessage(t('search.paused'));
+  }, [preserveSearchProgressAndStop, t]);
+
+  const resumeSearch = useCallback(() => {
+    if (!isPausedRef.current) return;
+    isPausedRef.current = false;
+    setIsPaused(false);
+    setLiveMessage(t('search.running'));
+    progressAnnouncementRef.current = Date.now();
+    launchWorkers(engine, concurrencySelection);
+  }, [concurrencySelection, engine, launchWorkers, t]);
+
+  const applyPowerSettings = useCallback(() => {
+    const nextEngine = concurrencyPolicy.gpuAllowed ? powerEngine : 'cpu';
+    if (nextEngine === 'gpu' && !gpuAvailable) return;
+    const wasPaused = isPausedRef.current;
+    if (!wasPaused) preserveSearchProgressAndStop();
+    else stopWorkers();
+    setEngine(nextEngine);
+    setConcurrencySelection(powerSelection);
+    setPowerOpen(false);
+    setEngineNotice('');
+    if (!wasPaused) {
+      isPausedRef.current = false;
+      setIsPaused(false);
+      setLiveMessage(t('search.running'));
+      launchWorkers(nextEngine, powerSelection);
+    }
+  }, [concurrencyPolicy.gpuAllowed, gpuAvailable, launchWorkers, powerEngine,
+    powerSelection, preserveSearchProgressAndStop, stopWorkers, t]);
+
+  const cancelSearch = () => {
+    stopWorkers();
+    isPausedRef.current = false;
+    setIsPaused(false); setPowerOpen(false); setScreen('setup');
+  };
   const goBack = () => {
     if (screen === 'searching') cancelSearch();
     else if (screen === 'seed-ready') setScreen('found');
@@ -395,6 +776,9 @@ export function App() {
   const reset = () => {
     stopWorkers(); setFoundCandidate(null); setFoundWallet(null); setRevealPending(false);
     setSafeToReveal(false); setSeedVisible(false); setCopyTarget(null); setError('');
+    baselineAttemptsRef.current = 0; baselineElapsedMsRef.current = 0;
+    activeSegmentStartedAtRef.current = 0; isPausedRef.current = false;
+    setIsPaused(false); setPowerOpen(false); setActiveWorkerCount(0);
     setLiveMessage(''); setScreen('setup');
   };
   const revealSeed = () => {
@@ -415,6 +799,52 @@ export function App() {
       window.clearTimeout(copyTimerRef.current);
       copyTimerRef.current = window.setTimeout(() => setCopyTarget(null), 1_800);
     } catch { setError(t('error.clipboard')); }
+  };
+
+  const runPerformanceCalibration = async () => {
+    if (calibrationRunning || calibrationPlan.length === 0) return;
+    terminateCalibrationWorkers();
+    const epoch = calibrationEpochRef.current + 1;
+    calibrationEpochRef.current = epoch;
+    setCalibrationRunning(true);
+    setCalibrationFailed(false);
+    setCalibrationResult(null);
+
+    const results: PerformanceCalibrationResult[] = [];
+    try {
+      for (let index = 0; index < calibrationPlan.length; index += 1) {
+        const step = calibrationPlan[index];
+        if (!step || epoch !== calibrationEpochRef.current) return;
+        setCalibrationStep({
+          current: index + 1,
+          total: calibrationPlan.length,
+          engine: step.engine,
+          count: step.count,
+        });
+        const result = await benchmarkPerformanceStep(step, epoch);
+        if (epoch !== calibrationEpochRef.current) return;
+        results.push(result);
+      }
+
+      const fastest = selectFastestCalibrationResult(results);
+      if (!fastest) {
+        setCalibrationFailed(true);
+        return;
+      }
+      setCalibrationResult(fastest);
+      setEngine(fastest.engine);
+      setConcurrencySelection(fastest.count);
+      setPowerEngine(fastest.engine);
+      setPowerSelection(fastest.count);
+    } catch {
+      if (epoch === calibrationEpochRef.current) setCalibrationFailed(true);
+    } finally {
+      if (epoch === calibrationEpochRef.current) {
+        terminateCalibrationWorkers();
+        setCalibrationRunning(false);
+        setCalibrationStep(null);
+      }
+    }
   };
 
   const setupScreen = (
@@ -448,45 +878,79 @@ export function App() {
             <span><strong>{t('wallet.title')}</strong><small>{t('wallet.description')}</small></span>
           </div>
           <div className="segmented" role="group" aria-label={t('wallet.group')}>
-            <button type="button" aria-pressed={version === 'w5'}
+            <button type="button" aria-pressed={version === 'w5'} disabled={calibrationRunning}
               className={version === 'w5' ? 'segmented__item is-active' : 'segmented__item'}
-              onClick={() => setVersion('w5')}>W5 <span>{t('wallet.recommended')}</span></button>
-            <button type="button" aria-pressed={version === 'v4r2'}
+              onClick={() => { setVersion('w5'); setCalibrationResult(null); }}>W5 <span>{t('wallet.recommended')}</span></button>
+            <button type="button" aria-pressed={version === 'v4r2'} disabled={calibrationRunning}
               className={version === 'v4r2' ? 'segmented__item is-active' : 'segmented__item'}
-              onClick={() => setVersion('v4r2')}>v4R2 <span>{t('wallet.compatibility')}</span></button>
+              onClick={() => { setVersion('v4r2'); setCalibrationResult(null); }}>v4R2 <span>{t('wallet.compatibility')}</span></button>
           </div>
         </div>
 
         <details className="advanced-settings">
           <summary>{t('advanced.title')}</summary>
           <div className="advanced-settings__body">
-            <div className="advanced-group">
+            {concurrencyPolicy.gpuAllowed ? <div className="advanced-group">
               <div className="setting-heading">
                 <span className="setting-icon setting-icon--orange"><GraphicsCard weight="fill" /></span>
                 <span><strong>{t('compute.title')}</strong><small>{t('compute.description')}</small></span>
               </div>
               <div className="engine-grid" role="group" aria-label={t('compute.title')}>
-                <button type="button" aria-pressed={engine === 'cpu'}
-                  className={engine === 'cpu' ? 'engine-card is-active' : 'engine-card'} onClick={() => setEngine('cpu')}>
+                <button type="button" aria-pressed={engine === 'cpu'} disabled={calibrationRunning}
+                  className={engine === 'cpu' ? 'engine-card is-active' : 'engine-card'} onClick={() => {
+                    setEngine('cpu');
+                  }}>
                   <Cpu weight="fill" /><span><strong>{t('compute.cpu')}</strong><small>{t('compute.cpuDescription')}</small></span>
                 </button>
-                <button type="button" aria-pressed={engine === 'gpu'} disabled={!gpuAvailable}
-                  className={engine === 'gpu' ? 'engine-card is-active' : 'engine-card'} onClick={() => setEngine('gpu')}>
+                <button type="button" aria-pressed={engine === 'gpu'} disabled={!gpuAvailable || calibrationRunning}
+                  className={engine === 'gpu' ? 'engine-card is-active' : 'engine-card'} onClick={() => {
+                    setEngine('gpu');
+                  }}>
                   <GraphicsCard weight="fill" /><span><strong>{t('compute.gpu')}</strong><small>{gpuAvailable ? t('compute.gpuDescription') : t('compute.gpuUnavailable')}</small></span>
                 </button>
               </div>
-            </div>
+            </div> : <div className="mobile-performance-note">
+              <span className="setting-icon setting-icon--green"><Cpu weight="fill" /></span>
+              <span><strong>{t('compute.mobileTitle')}</strong><small>{t('compute.mobileDescription', { count: concurrencyPolicy.autoWorkerCount })}</small></span>
+            </div>}
+
+            {deviceRecommendation && <div className="performance-tune-row">
+              <button type="button" aria-busy={calibrationRunning}
+                onClick={calibrationRunning ? cancelPerformanceCalibration : () => void runPerformanceCalibration()}>
+                {calibrationRunning ? <Stop weight="fill" />
+                  : calibrationResult ? <CheckCircle weight="fill" />
+                  : <SlidersHorizontal weight="bold" />}
+                <span aria-live="polite"><strong>{calibrationRunning && calibrationStep
+                  ? t('device.measuring', {
+                      current: calibrationStep.current,
+                      total: calibrationStep.total,
+                      engine: calibrationStep.engine.toUpperCase(),
+                      count: calibrationStep.count,
+                    })
+                  : calibrationResult ? t('device.measured')
+                  : calibrationFailed ? t('device.measureFailed')
+                  : t('device.measure')}</strong><small>{calibrationRunning
+                    ? t('device.cancelMeasure')
+                    : calibrationResult ? t('device.measuredValue', {
+                        engine: calibrationResult.engine.toUpperCase(),
+                        count: calibrationResult.count,
+                        speed: compactNumber(calibrationResult.attemptsPerSecond, locale),
+                      })
+                    : calibrationFailed ? t('device.measureFailedHint')
+                    : t('device.measureHint', { seconds: calibrationDurationSeconds })}</small></span>
+              </button>
+            </div>}
 
             <label className="select-row">
               <span className="setting-icon setting-icon--green"><Cpu weight="fill" /></span>
               <span className="toggle-copy"><strong>{t(engine === 'gpu' ? 'threads.gpuTitle' : 'threads.title')}</strong><small>{t(engine === 'gpu' ? 'threads.gpuDescription' : 'threads.description', { count: workerCount })}</small></span>
-              <select value={String(concurrencySelection)} onChange={(event) => {
+              <select value={String(concurrencySelection)} disabled={calibrationRunning} onChange={(event) => {
                 const value = event.target.value;
                 setConcurrencySelection(value === 'auto' || value === 'maximum' ? value : Number(value));
               }}>
-                <option value="auto">{t('threads.auto', { count: concurrencyPolicy.autoWorkerCount })}</option>
-                <option value="maximum">{t('threads.maximum', { count: concurrencyPolicy.maximumWorkerCount })}</option>
-                {Array.from({ length: concurrencyPolicy.maximumWorkerCount }, (_, index) => index + 1).map((count) =>
+                <option value="auto">{t('threads.auto', { count: autoWorkerCount })}</option>
+                <option value="maximum">{t('threads.maximum', { count: maximumWorkerCount })}</option>
+                {workerCountOptions.map((count) =>
                   <option key={count} value={count}>{t('threads.manual', { count })}</option>)}
               </select>
             </label>
@@ -501,9 +965,13 @@ export function App() {
             <div className="advanced-group">
               <div className="advanced-label">{t('format.title')}</div>
               <div className="radio-stack">
-                <label><input type="radio" name="address-format" checked={addressFormat === 'non-bounceable'} onChange={() => setAddressFormat('non-bounceable')} />
+                <label><input type="radio" name="address-format" disabled={calibrationRunning} checked={addressFormat === 'non-bounceable'} onChange={() => {
+                  setAddressFormat('non-bounceable'); setCalibrationResult(null);
+                }} />
                   <span><strong>UQ…</strong><small>{t('format.nonBounceable')}</small></span></label>
-                <label><input type="radio" name="address-format" checked={addressFormat === 'bounceable'} onChange={() => setAddressFormat('bounceable')} />
+                <label><input type="radio" name="address-format" disabled={calibrationRunning} checked={addressFormat === 'bounceable'} onChange={() => {
+                  setAddressFormat('bounceable'); setCalibrationResult(null);
+                }} />
                   <span><strong>EQ…</strong><small>{t('format.bounceable')}</small></span></label>
               </div>
             </div>
@@ -513,7 +981,7 @@ export function App() {
 
       {error && <div className="error-banner" role="alert">{error}</div>}
       <button type="button" className="primary-button"
-        disabled={Boolean(suffixError) || (engine === 'gpu' && !gpuAvailable)} onClick={startSearch}>
+        disabled={calibrationRunning || Boolean(suffixError) || (engine === 'gpu' && !gpuAvailable)} onClick={startSearch}>
         <MagicWand weight="bold" /> {t('action.start')}
       </button>
       <p className="privacy-note"><LockKey weight="fill" /> {t('privacy.localCompute')}</p>
@@ -521,17 +989,17 @@ export function App() {
   );
 
   const engineLabel = activeEngine === 'gpu'
-    ? t('engine.gpuParallel', { count: workerCount })
-    : t('engine.cpu', { count: searchWorkerCount });
+    ? t('engine.gpuParallel', { count: activeWorkerCount })
+    : t('engine.cpu', { count: activeWorkerCount });
   const searchingScreen = (
     <>
       <ScreenSticker screen="searching" locale={locale} />
       <div className="hero-copy"><StatusPill locale={locale} /><h1 tabIndex={-1}>{t('search.title')}</h1>
         <p>{t('search.description', { suffix: cleanSuffix, version: version === 'w5' ? 'W5' : 'v4R2', engine: engineLabel })}</p></div>
       {engineNotice && <div className="notice-banner" role="status">{engineNotice}</div>}
-      <section className="panel progress-panel">
+      <section className={isPaused ? 'panel progress-panel is-paused' : 'panel progress-panel'}>
         <div className="pulse-orbit" aria-hidden="true"><span /></div>
-        <div className="live-label"><span /> {t('search.running')}</div>
+        <div className={isPaused ? 'live-label is-paused' : 'live-label'}><span /> {t(isPaused ? 'search.paused' : 'search.running')}</div>
         <div className="attempts-number">{compactNumber(progress.attempts, locale)}</div>
         <div className="attempts-caption">{t('search.attempts')}</div>
         <div className="stats-grid">
@@ -542,6 +1010,51 @@ export function App() {
         <div className="sample-address"><small>{t('search.sample')}</small><span>{progress.sampleAddress || t('search.preparing')}</span></div>
       </section>
       <div className="probability-note"><Info weight="fill" /><span>{t('search.random')}</span></div>
+      <div className="search-actions">
+        <button type="button" className="secondary-button" onClick={isPaused ? resumeSearch : pauseSearch}>
+          {isPaused ? <Play weight="fill" /> : <Pause weight="fill" />} {t(isPaused ? 'search.resume' : 'search.pause')}
+        </button>
+        <button type="button" className="secondary-button" aria-expanded={powerOpen} aria-controls="power-settings"
+          onClick={() => {
+            setPowerEngine(engine); setPowerSelection(concurrencySelection);
+            setPowerOpen((open) => !open);
+          }}>
+          <SlidersHorizontal weight="bold" /> {t('search.power')}
+        </button>
+      </div>
+      {powerOpen && <section id="power-settings" className="panel power-panel" aria-labelledby="power-title">
+        <div className="power-panel__header">
+          <div><h2 id="power-title">{t('power.title')}</h2><p>{t('power.description')}</p></div>
+          <button type="button" className="icon-button" aria-label={t('power.close')} onClick={() => setPowerOpen(false)}><X weight="bold" /></button>
+        </div>
+        {concurrencyPolicy.gpuAllowed && <div className="engine-grid" role="group" aria-label={t('compute.title')}>
+          <button type="button" aria-pressed={powerEngine === 'cpu'}
+            className={powerEngine === 'cpu' ? 'engine-card is-active' : 'engine-card'} onClick={() => setPowerEngine('cpu')}>
+            <Cpu weight="fill" /><span><strong>{t('compute.cpu')}</strong><small>{t('compute.cpuDescription')}</small></span>
+          </button>
+          <button type="button" aria-pressed={powerEngine === 'gpu'} disabled={!gpuAvailable}
+            className={powerEngine === 'gpu' ? 'engine-card is-active' : 'engine-card'} onClick={() => setPowerEngine('gpu')}>
+            <GraphicsCard weight="fill" /><span><strong>{t('compute.gpu')}</strong><small>{gpuAvailable ? t('compute.gpuDescription') : t('compute.gpuUnavailable')}</small></span>
+          </button>
+        </div>}
+        <label className="select-row power-panel__workers">
+          <span className="setting-icon setting-icon--green"><Cpu weight="fill" /></span>
+          <span className="toggle-copy"><strong>{t(powerEngine === 'gpu' ? 'threads.gpuTitle' : 'threads.title')}</strong>
+            <small>{t('power.current', { count: powerWorkerCount })}</small></span>
+          <select value={String(powerSelection)} onChange={(event) => {
+            const value = event.target.value;
+            setPowerSelection(value === 'auto' || value === 'maximum' ? value : Number(value));
+          }}>
+            <option value="auto">{t('threads.auto', { count: powerAutoWorkerCount })}</option>
+            <option value="maximum">{t('threads.maximum', { count: powerMaximumWorkerCount })}</option>
+            {powerWorkerCountOptions.map((count) => <option key={count} value={count}>{t('threads.manual', { count })}</option>)}
+          </select>
+        </label>
+        <button type="button" className="primary-button power-panel__apply"
+          disabled={powerEngine === 'gpu' && !gpuAvailable} onClick={applyPowerSettings}>
+          <Check weight="bold" /> {t('power.apply')}
+        </button>
+      </section>}
       <button type="button" className="secondary-button danger-button" onClick={cancelSearch}><Stop weight="fill" /> {t('search.stop')}</button>
     </>
   );

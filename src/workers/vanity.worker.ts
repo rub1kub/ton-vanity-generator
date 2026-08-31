@@ -1,8 +1,11 @@
 /// <reference lib="webworker" />
 
-import { generateMnemonic } from '@scure/bip39';
-import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { Buffer } from 'buffer';
+import { mnemonicToSeedWebcrypto } from '@scure/bip39';
+import {
+  generateEnglishMnemonic12,
+  generateEnglishMnemonic12Batch,
+} from '../lib/fast-mnemonic';
 import { matchesVanitySuffix, validateSearchOptions } from '../lib/search';
 import type {
   FoundCandidate, FoundWallet, SearchOptions, SearchProgress,
@@ -10,8 +13,10 @@ import type {
 } from '../types';
 
 const PROGRESS_INTERVAL_MS = 500;
-const GPU_BATCH_SIZE = 64;
-const BIP39_STRENGTH_BITS = 128;
+// Browser profiling on the target RTX 5060 showed 512 to be the fastest safe
+// end-to-end dispatch size: large enough to saturate the GPU without pushing
+// one batch into an excessive watchdog/interaction stall.
+const GPU_BATCH_SIZE = 512;
 
 const workerScope = self as DedicatedWorkerGlobalScope;
 
@@ -23,6 +28,8 @@ const workerScope = self as DedicatedWorkerGlobalScope;
 Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true });
 
 const tonRuntime = import('../lib/ton');
+const cpuEd25519Runtime = import('../lib/cpu-ed25519')
+  .then(({ createCpuEd25519Accelerator }) => createCpuEd25519Accelerator());
 
 let activeRunId = 0;
 let pendingWallet: FoundWallet | null = null;
@@ -62,6 +69,27 @@ function clearPendingWallet(): void {
   if (pendingWallet) clearMnemonic(pendingWallet.mnemonic);
   pendingWallet = null;
   pendingWorkerId = -1;
+}
+
+interface PendingCpuCandidate {
+  mnemonic: string[];
+  rootSeed: Promise<Uint8Array>;
+}
+
+function createPendingCpuCandidate(): PendingCpuCandidate {
+  const mnemonicText = generateEnglishMnemonic12();
+  return {
+    mnemonic: mnemonicText.split(' '),
+    rootSeed: mnemonicToSeedWebcrypto(mnemonicText),
+  };
+}
+
+function discardPendingCpuCandidate(candidate: PendingCpuCandidate): void {
+  clearMnemonic(candidate.mnemonic);
+  void candidate.rootSeed.then(
+    (rootSeed) => { rootSeed.fill(0); },
+    () => undefined,
+  );
 }
 
 function destroyAccelerator(): void {
@@ -118,25 +146,95 @@ async function runCpuSearch(
   suffix: string,
   state: RunState,
 ): Promise<void> {
-  const { generateWalletCandidate } = await tonRuntime;
+  const [ton, cpuEd25519] = await Promise.all([tonRuntime, cpuEd25519Runtime]);
   postResponse({ type: 'engine', workerId, engine: 'cpu' });
 
-  while (runId === activeRunId) {
-    const candidate = await generateWalletCandidate(options.version, options.addressFormat);
-    if (runId !== activeRunId) {
-      clearMnemonic(candidate.mnemonic);
-      return;
-    }
+  let pending: PendingCpuCandidate | null = createPendingCpuCandidate();
+  try {
+    while (runId === activeRunId) {
+      const current = pending;
+      pending = null;
+      let rootSeed: Uint8Array | undefined;
+      let tonSeed: Uint8Array | undefined;
+      let publicKey: Uint8Array | undefined;
+      let address = '';
 
-    state.attempts += 1;
-    state.sampleAddress = candidate.address;
-    if (matchesVanitySuffix(candidate.address, suffix, options.caseSensitive)) {
-      publishCandidate(runId, workerId, options, candidate, state);
-      return;
-    }
+      try {
+        rootSeed = await current.rootSeed;
+        if (runId !== activeRunId) {
+          clearMnemonic(current.mnemonic);
+          return;
+        }
 
-    clearMnemonic(candidate.mnemonic);
-    reportProgress(workerId, state);
+        // Start the expensive native PBKDF2 for the next phrase before the
+        // synchronous SLIP-0010, Ed25519, and TON StateInit tail. Chromium can
+        // now overlap those two independent stages instead of leaving its
+        // crypto thread idle during every address build.
+        pending = createPendingCpuCandidate();
+        tonSeed = ton.deriveTonPathSeed(rootSeed);
+        publicKey = cpuEd25519.publicKeyFromSeed(tonSeed);
+        const publicKeyBuffer = Buffer.from(
+          publicKey.buffer as ArrayBuffer,
+          publicKey.byteOffset,
+          publicKey.byteLength,
+        );
+        address = ton.walletAddressFromPublicKey(
+          publicKeyBuffer,
+          options.version,
+          options.addressFormat,
+        );
+      } catch (error) {
+        clearMnemonic(current.mnemonic);
+        throw error;
+      } finally {
+        rootSeed?.fill(0);
+        tonSeed?.fill(0);
+        publicKey?.fill(0);
+      }
+
+      if (runId !== activeRunId) {
+        clearMnemonic(current.mnemonic);
+        return;
+      }
+
+      state.attempts += 1;
+      state.sampleAddress = address;
+      if (matchesVanitySuffix(address, suffix, options.caseSensitive)) {
+        // libsodium is self-tested at startup, and a rare winning phrase is
+        // additionally re-derived through the canonical noble/TON path before
+        // anything is exposed to the user.
+        let verified: Awaited<ReturnType<typeof ton.walletCandidateFromMnemonic>>;
+        try {
+          verified = await ton.walletCandidateFromMnemonic(
+            current.mnemonic,
+            options.version,
+            options.addressFormat,
+          );
+        } catch (error) {
+          clearMnemonic(current.mnemonic);
+          throw error;
+        }
+        if (runId !== activeRunId) {
+          clearMnemonic(current.mnemonic);
+          clearMnemonic(verified.mnemonic);
+          return;
+        }
+        if (verified.address !== address) {
+          clearMnemonic(current.mnemonic);
+          clearMnemonic(verified.mnemonic);
+          throw new Error('CPU winner failed independent canonical verification.');
+        }
+
+        clearMnemonic(current.mnemonic);
+        publishCandidate(runId, workerId, options, verified, state);
+        return;
+      }
+
+      clearMnemonic(current.mnemonic);
+      reportProgress(workerId, state);
+    }
+  } finally {
+    if (pending) discardPendingCpuCandidate(pending);
   }
 }
 
@@ -147,9 +245,10 @@ async function runGpuSearch(
   suffix: string,
   state: RunState,
 ): Promise<void> {
-  const [{ WebGpuPbkdf2Accelerator }, ton] = await Promise.all([
+  const [{ WebGpuPbkdf2Accelerator }, ton, cpuEd25519] = await Promise.all([
     import('../lib/webgpu-pbkdf2'),
     tonRuntime,
+    cpuEd25519Runtime,
   ]);
   const accelerator = await WebGpuPbkdf2Accelerator.create({
     maxBatchSize: GPU_BATCH_SIZE,
@@ -165,14 +264,11 @@ async function runGpuSearch(
   postResponse({ type: 'engine', workerId, engine: 'gpu' });
 
   while (runId === activeRunId) {
-    const mnemonicTexts = Array.from(
-      { length: GPU_BATCH_SIZE },
-      () => generateMnemonic(wordlist, BIP39_STRENGTH_BITS),
-    );
+    const mnemonicTexts = generateEnglishMnemonic12Batch(GPU_BATCH_SIZE);
     let seeds: Uint8Array[] = [];
 
     try {
-      seeds = await accelerator.deriveSeeds(mnemonicTexts);
+      seeds = await accelerator.deriveTonSeeds(mnemonicTexts);
       if (runId !== activeRunId) return;
 
       // Finish the whole GPU batch into canonical TON addresses before
@@ -183,13 +279,23 @@ async function runGpuSearch(
         const seed = seeds[index];
         try {
           if (!seed) throw new Error('WebGPU returned an incomplete seed batch.');
-          const candidate = ton.walletCandidateFromRootSeed(
-            seed,
-            mnemonic,
-            options.version,
-            options.addressFormat,
-          );
-          return { ok: true as const, mnemonic, candidate };
+          const publicKey = cpuEd25519.publicKeyFromSeed(seed);
+          let address: string;
+          try {
+            const publicKeyBuffer = Buffer.from(
+              publicKey.buffer as ArrayBuffer,
+              publicKey.byteOffset,
+              publicKey.byteLength,
+            );
+            address = ton.walletAddressFromPublicKey(
+              publicKeyBuffer,
+              options.version,
+              options.addressFormat,
+            );
+          } finally {
+            publicKey.fill(0);
+          }
+          return { ok: true as const, mnemonic, address };
         } catch (error) {
           return { ok: false as const, mnemonic, error };
         } finally {
@@ -199,55 +305,55 @@ async function runGpuSearch(
 
       const clearDerivedBatch = () => {
         for (const item of derivedBatch) {
-          if (item.ok) clearMnemonic(item.candidate.mnemonic);
           clearMnemonic(item.mnemonic);
         }
       };
-      const failure = derivedBatch.find((item) => !item.ok);
-      if (failure && !failure.ok) {
-        clearDerivedBatch();
-        throw failure.error;
-      }
+      try {
+        const failure = derivedBatch.find((item) => !item.ok);
+        if (failure && !failure.ok) throw failure.error;
 
-      if (runId !== activeRunId) {
-        clearDerivedBatch();
-        return;
-      }
+        if (runId !== activeRunId) return;
 
-      let winner: Extract<(typeof derivedBatch)[number], { ok: true }> | undefined;
-      for (const item of derivedBatch) {
-        if (!item.ok) continue;
-        state.attempts += 1;
-        state.sampleAddress = item.candidate.address;
-        if (!winner && matchesVanitySuffix(
-          item.candidate.address,
-          suffix,
-          options.caseSensitive,
-        )) winner = item;
-      }
-
-      if (winner) {
-        // A winning GPU result is independently re-derived from its mnemonic
-        // on the CPU before the address or recovery phrase is accepted.
-        const verified = await ton.walletCandidateFromMnemonic(
-          winner.mnemonic,
-          options.version,
-          options.addressFormat,
-        );
-        if (verified.address !== winner.candidate.address) {
-          clearMnemonic(verified.mnemonic);
-          clearDerivedBatch();
-          throw new Error('GPU winner failed independent CPU verification.');
+        let winner: Extract<(typeof derivedBatch)[number], { ok: true }> | undefined;
+        for (const item of derivedBatch) {
+          if (!item.ok) continue;
+          state.attempts += 1;
+          state.sampleAddress = item.address;
+          if (!winner && matchesVanitySuffix(
+            item.address,
+            suffix,
+            options.caseSensitive,
+          )) winner = item;
         }
 
-        clearDerivedBatch();
-        publishCandidate(runId, workerId, options, verified, state);
-        destroyAccelerator();
-        return;
-      }
+        if (winner) {
+          // A winning GPU result is independently re-derived from its mnemonic
+          // on the CPU before the address or recovery phrase is accepted.
+          const verified = await ton.walletCandidateFromMnemonic(
+            winner.mnemonic,
+            options.version,
+            options.addressFormat,
+          );
+          if (runId !== activeRunId) {
+            clearMnemonic(verified.mnemonic);
+            return;
+          }
+          if (verified.address !== winner.address) {
+            clearMnemonic(verified.mnemonic);
+            throw new Error('GPU winner failed independent CPU verification.');
+          }
 
-      clearDerivedBatch();
-      reportProgress(workerId, state);
+          publishCandidate(runId, workerId, options, verified, state);
+          destroyAccelerator();
+          return;
+        }
+
+        reportProgress(workerId, state);
+      } finally {
+        // This also covers rejected CPU winner verification, stale runs, and
+        // mismatches, so all 512 split mnemonic arrays are cleared promptly.
+        clearDerivedBatch();
+      }
     } finally {
       for (const seed of seeds) seed.fill(0);
       mnemonicTexts.fill('');
@@ -274,8 +380,8 @@ async function runSearch(
       await runGpuSearch(runId, workerId, options, suffix, state);
       return;
     } catch (error) {
-      destroyAccelerator();
       if (runId !== activeRunId) return;
+      destroyAccelerator();
       postResponse({
         type: 'engine',
         workerId,
@@ -327,8 +433,8 @@ workerScope.addEventListener('message', (event: MessageEvent<WorkerRequest>) => 
 
   postResponse({ type: 'ready', workerId: request.workerId });
   void runSearch(runId, request.workerId, request.options, validation.suffix).catch((error: unknown) => {
-    destroyAccelerator();
     if (runId !== activeRunId) return;
+    destroyAccelerator();
     activeRunId += 1;
     postResponse({
       type: 'error',

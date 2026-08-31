@@ -30,6 +30,7 @@
     "@ton/crypto": "^3.3.0",
     "@ton/ton": "^16.3.0",
     "buffer": "^6.0.3",
+    "libsodium-wrappers": "^0.8.4",
     "lottie-web": "^5.13.0",
     "pako": "^2.1.0",
     "react": "^19.2.8",

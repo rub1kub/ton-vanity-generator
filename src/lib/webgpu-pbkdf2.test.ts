@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BIP39_SEED_BYTES,
+  TON_PATH_SEED_BYTES,
   WebGpuPbkdf2Error,
   bytesEqual,
   canonicalizeBip39Mnemonic,
@@ -10,6 +11,7 @@ import {
   hexToBytes,
   packMnemonicBatch,
 } from './webgpu-pbkdf2';
+import { deriveTonPathSeed } from './ton';
 
 const VECTOR_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -87,5 +89,19 @@ describe('PBKDF2 CPU reference', () => {
 
     seed.fill(0);
     expected.fill(0);
+  });
+
+  it('feeds the exact TON m/44\'/607\'/0\' SLIP-0010 KAT', async () => {
+    const rootSeed = await deriveBip39SeedCpuReference(VECTOR_MNEMONIC);
+    const tonSeed = deriveTonPathSeed(rootSeed);
+
+    expect(tonSeed).toHaveLength(TON_PATH_SEED_BYTES);
+    expect(Array.from(tonSeed, (byte) =>
+      byte.toString(16).padStart(2, '0')).join('')).toBe(
+      'b477ef5ed17fb8a2b8faddd7a9835a227243a82c70b190c7af4896155aa7df9f',
+    );
+
+    rootSeed.fill(0);
+    tonSeed.fill(0);
   });
 });

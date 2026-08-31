@@ -4,7 +4,10 @@ import { hmac } from '@noble/hashes/hmac.js';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { keyPairFromSeed } from '@ton/crypto';
-import { WalletContractV4, WalletContractV5R1 } from '@ton/ton';
+import {
+  beginCell, contractAddress, WalletContractV4, WalletContractV5R1,
+  type Cell,
+} from '@ton/ton';
 import { Buffer } from 'buffer';
 
 import type { AddressFormat, WalletVersion } from '../types';
@@ -15,6 +18,41 @@ const HARDENED_OFFSET = 0x80000000;
 const ED25519_CURVE = new TextEncoder().encode('ed25519 seed');
 const MAINNET_GLOBAL_ID = -239;
 const BASECHAIN_WORKCHAIN = 0;
+const V4_DEFAULT_WALLET_ID = 698_983_191;
+// Default W5R1 client context: mainnet (-239), workchain 0, version 0,
+// subwallet 0. This is the canonical serialized value from @ton/ton.
+const W5_DEFAULT_WALLET_ID = 2_147_483_409;
+
+function getCanonicalWalletCode(version: WalletVersion): Cell {
+  const placeholderPublicKey = Buffer.alloc(32);
+  const wallet = version === 'v4r2'
+    ? WalletContractV4.create({
+        workchain: BASECHAIN_WORKCHAIN,
+        publicKey: placeholderPublicKey,
+      })
+    : WalletContractV5R1.create({
+        publicKey: placeholderPublicKey,
+        walletId: {
+          networkGlobalId: MAINNET_GLOBAL_ID,
+          context: {
+            walletVersion: 'v5r1',
+            workchain: BASECHAIN_WORKCHAIN,
+            subwalletNumber: 0,
+          },
+        },
+      });
+  placeholderPublicKey.fill(0);
+  const code = wallet.init?.code;
+  if (!code) throw new Error(`Missing canonical ${version} wallet code.`);
+  return code;
+}
+
+// Contract code is immutable. Parsing its large BOC for every vanity attempt
+// dominated the address tail, so do it exactly once when this worker loads.
+const WALLET_CODE: Record<WalletVersion, Cell> = {
+  v4r2: getCanonicalWalletCode('v4r2'),
+  w5: getCanonicalWalletCode('w5'),
+};
 
 type TonKeyPair = ReturnType<typeof keyPairFromSeed>;
 export type TonPublicKey = TonKeyPair['publicKey'];
@@ -98,12 +136,11 @@ export function publicKeyFromSeed(seed: Uint8Array): TonPublicKey {
  * Finishes TON wallet derivation from an already-derived 64-byte BIP39 root
  * seed. The caller retains ownership of rootSeed and must wipe it.
  */
-export function walletCandidateFromRootSeed(
+export function walletAddressFromRootSeed(
   rootSeed: Uint8Array,
-  mnemonic: readonly string[],
   version: WalletVersion,
   addressFormat: AddressFormat,
-): WalletCandidate {
+): string {
   if (rootSeed.byteLength !== 64) {
     throw new Error('A BIP39 root seed must be exactly 64 bytes.');
   }
@@ -119,16 +156,65 @@ export function walletCandidateFromRootSeed(
     derivedSeed = Buffer.from(derivedSeedBytes);
     publicKey = publicKeyFromSeed(derivedSeed);
 
-    return {
-      address: walletAddressFromPublicKey(publicKey, version, addressFormat),
-      mnemonic: [...mnemonic],
-    };
+    return walletAddressFromPublicKey(publicKey, version, addressFormat);
   } finally {
     rootSeedBuffer?.fill(0);
     derivedSeedBytes?.fill(0);
     derivedSeed?.fill(0);
     publicKey?.fill(0);
   }
+}
+
+/**
+ * Finishes a wallet address from the final 32-byte TON Ed25519 path seed.
+ * This is the CPU tail used by the fused WebGPU PBKDF2 + SLIP-0010 path.
+ * The caller retains ownership of tonSeed and must wipe it.
+ */
+export function walletAddressFromTonSeed(
+  tonSeed: Uint8Array,
+  version: WalletVersion,
+  addressFormat: AddressFormat,
+): string {
+  if (tonSeed.byteLength !== 32) {
+    throw new Error('A TON Ed25519 path seed must be exactly 32 bytes.');
+  }
+
+  let publicKey: TonPublicKey | undefined;
+  try {
+    publicKey = publicKeyFromSeed(tonSeed);
+    return walletAddressFromPublicKey(publicKey, version, addressFormat);
+  } finally {
+    publicKey?.fill(0);
+  }
+}
+
+export function walletCandidateFromTonSeed(
+  tonSeed: Uint8Array,
+  mnemonic: readonly string[],
+  version: WalletVersion,
+  addressFormat: AddressFormat,
+): WalletCandidate {
+  return {
+    address: walletAddressFromTonSeed(tonSeed, version, addressFormat),
+    mnemonic: [...mnemonic],
+  };
+}
+
+/**
+ * Candidate wrapper used only when recovery words must stay attached to the
+ * result. Bulk GPU losers call walletAddressFromRootSeed directly and avoid a
+ * twelve-string array copy for every attempted address.
+ */
+export function walletCandidateFromRootSeed(
+  rootSeed: Uint8Array,
+  mnemonic: readonly string[],
+  version: WalletVersion,
+  addressFormat: AddressFormat,
+): WalletCandidate {
+  return {
+    address: walletAddressFromRootSeed(rootSeed, version, addressFormat),
+    mnemonic: [...mnemonic],
+  };
 }
 
 /** CPU reference path used both by normal search and to verify GPU winners. */
@@ -168,25 +254,26 @@ export function walletAddressFromPublicKey(
     throw new Error('A TON Ed25519 public key must be exactly 32 bytes.');
   }
 
-  const wallet =
-    version === 'v4r2'
-      ? WalletContractV4.create({
-          workchain: BASECHAIN_WORKCHAIN,
-          publicKey,
-        })
-      : WalletContractV5R1.create({
-          publicKey,
-          walletId: {
-            networkGlobalId: MAINNET_GLOBAL_ID,
-            context: {
-              walletVersion: 'v5r1',
-              workchain: BASECHAIN_WORKCHAIN,
-              subwalletNumber: 0,
-            },
-          },
-        });
+  const data = version === 'v4r2'
+    ? beginCell()
+        .storeUint(0, 32)
+        .storeUint(V4_DEFAULT_WALLET_ID, 32)
+        .storeBuffer(publicKey)
+        .storeBit(0)
+        .endCell()
+    : beginCell()
+        .storeUint(1, 1)
+        .storeUint(0, 32)
+        .storeInt(W5_DEFAULT_WALLET_ID, 32)
+        .storeBuffer(publicKey, 32)
+        .storeBit(0)
+        .endCell();
+  const address = contractAddress(BASECHAIN_WORKCHAIN, {
+    code: WALLET_CODE[version],
+    data,
+  });
 
-  return wallet.address.toString({
+  return address.toString({
     bounceable: addressFormat === 'bounceable',
     testOnly: false,
     urlSafe: true,

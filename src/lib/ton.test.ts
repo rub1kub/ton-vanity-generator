@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { deriveEd25519Path, keyPairFromSeed } from '@ton/crypto';
+import { WalletContractV4, WalletContractV5R1 } from '@ton/ton';
 import { Buffer } from 'buffer';
 
 import {
@@ -9,6 +10,8 @@ import {
   generateWalletCandidate,
   publicKeyFromSeed,
   walletAddressFromPublicKey,
+  walletAddressFromRootSeed,
+  walletAddressFromTonSeed,
 } from './ton';
 
 type TestPublicKey = Parameters<typeof walletAddressFromPublicKey>[0];
@@ -27,15 +30,61 @@ const TEST_PUBLIC_KEY = NodeBuffer.from(
 );
 
 describe('deriveTonPathSeed', () => {
-  it('matches the canonical @ton/crypto SLIP-0010 implementation', async () => {
+  it('matches an exact m/44\'/607\'/0\' SLIP-0010 known-answer vector', () => {
     const rootSeed = Uint8Array.from({ length: 64 }, (_, index) => index);
-    const expected = await deriveEd25519Path(Buffer.from(rootSeed), [44, 607, 0]);
     const actual = deriveTonPathSeed(rootSeed);
 
-    expect(Buffer.from(actual).toString('hex')).toBe(expected.toString('hex'));
+    expect(Buffer.from(actual).toString('hex')).toBe(
+      '26d9edd7b7452b14a75ac4b3ca5d7785739913439916656b8eb5a9d8f5d8d224',
+    );
     actual.fill(0);
-    expected.fill(0);
     rootSeed.fill(0);
+  });
+
+  it('matches @ton/crypto for randomized root seeds', async () => {
+    for (let sample = 0; sample < 64; sample += 1) {
+      const rootSeed = crypto.getRandomValues(new Uint8Array(64));
+      const expected = await deriveEd25519Path(
+        Buffer.from(rootSeed),
+        [44, 607, 0],
+      );
+      const actual = deriveTonPathSeed(rootSeed);
+
+      expect(Buffer.from(actual).toString('hex')).toBe(expected.toString('hex'));
+      actual.fill(0);
+      expected.fill(0);
+      rootSeed.fill(0);
+    }
+  });
+});
+
+describe('walletAddressFromTonSeed', () => {
+  it('is identical to the root-seed path for both wallet contracts', () => {
+    for (let sample = 0; sample < 24; sample += 1) {
+      const rootSeed = crypto.getRandomValues(new Uint8Array(64));
+      const tonSeed = deriveTonPathSeed(rootSeed);
+      for (const version of ['v4r2', 'w5'] as const) {
+        expect(walletAddressFromTonSeed(
+          tonSeed,
+          version,
+          'non-bounceable',
+        )).toBe(walletAddressFromRootSeed(
+          rootSeed,
+          version,
+          'non-bounceable',
+        ));
+      }
+      rootSeed.fill(0);
+      tonSeed.fill(0);
+    }
+  });
+
+  it('rejects malformed path seeds', () => {
+    expect(() => walletAddressFromTonSeed(
+      new Uint8Array(31),
+      'w5',
+      'non-bounceable',
+    )).toThrow('exactly 32 bytes');
   });
 });
 
@@ -88,6 +137,44 @@ describe('walletAddressFromPublicKey', () => {
         'non-bounceable',
       ),
     ).toThrow('exactly 32 bytes');
+  });
+
+  it('stays byte-for-byte equal to the canonical TON constructors', () => {
+    for (let sample = 0; sample < 24; sample += 1) {
+      const publicKey = Buffer.alloc(32);
+      for (let index = 0; index < publicKey.length; index += 1) {
+        publicKey[index] = (sample * 73 + index * 29 + 11) & 0xff;
+      }
+
+      const canonicalV4 = WalletContractV4.create({
+        workchain: 0,
+        publicKey,
+      }).address;
+      const canonicalW5 = WalletContractV5R1.create({
+        publicKey,
+        walletId: {
+          networkGlobalId: -239,
+          context: {
+            walletVersion: 'v5r1',
+            workchain: 0,
+            subwalletNumber: 0,
+          },
+        },
+      }).address;
+
+      for (const addressFormat of ['non-bounceable', 'bounceable'] as const) {
+        const format = {
+          bounceable: addressFormat === 'bounceable',
+          testOnly: false,
+          urlSafe: true,
+        };
+        expect(walletAddressFromPublicKey(publicKey, 'v4r2', addressFormat))
+          .toBe(canonicalV4.toString(format));
+        expect(walletAddressFromPublicKey(publicKey, 'w5', addressFormat))
+          .toBe(canonicalW5.toString(format));
+      }
+      publicKey.fill(0);
+    }
   });
 });
 

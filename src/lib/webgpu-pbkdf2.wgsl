@@ -259,13 +259,7 @@ fn byte_swap32(value: u32) -> u32 {
     ((value & 0xff000000u) >> 24u);
 }
 
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-  let candidate = global_id.x;
-  if (candidate >= params.count) {
-    return;
-  }
-
+fn derive_bip39_seed(candidate: u32) -> array<vec2<u32>, 8> {
   var inner_pad = zero_block();
   var outer_pad = zero_block();
   let ipad = vec2<u32>(0x36363636u, 0x36363636u);
@@ -298,11 +292,134 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
   }
 
+  return derived_key;
+}
+
+// HMAC-SHA512(key = "ed25519 seed", message = 64-byte BIP39 root seed).
+// This is the SLIP-0010 Ed25519 master-key operation.
+fn slip10_master(root_seed: array<vec2<u32>, 8>) -> array<vec2<u32>, 8> {
+  var inner_pad = zero_block();
+  var outer_pad = zero_block();
+  let ipad = vec2<u32>(0x36363636u, 0x36363636u);
+  let opad = vec2<u32>(0x5c5c5c5cu, 0x5c5c5c5cu);
+
+  // Big-endian ASCII bytes for "ed25519 seed", zero-padded to 128 bytes.
+  inner_pad[0] = xor64(vec2<u32>(0x65643235u, 0x35313920u), ipad);
+  outer_pad[0] = xor64(vec2<u32>(0x65643235u, 0x35313920u), opad);
+  inner_pad[1] = xor64(vec2<u32>(0x73656564u, 0u), ipad);
+  outer_pad[1] = xor64(vec2<u32>(0x73656564u, 0u), opad);
+  for (var index = 2u; index < 16u; index += 1u) {
+    inner_pad[index] = ipad;
+    outer_pad[index] = opad;
+  }
+
+  var inner_base = SHA512_IV;
+  var outer_base = SHA512_IV;
+  sha512_compress(&inner_base, &inner_pad);
+  sha512_compress(&outer_base, &outer_pad);
+  return hmac_64(inner_base, outer_base, root_seed);
+}
+
+// HMAC-SHA512 for a 32-byte chain-code key and the 37-byte hardened-child
+// payload 0x00 || parent_key || ser32(index). SLIP-0010 Ed25519 supports only
+// hardened children, which is exactly what TON's m/44'/607'/0' path uses.
+fn slip10_child(
+  parent: array<vec2<u32>, 8>,
+  child_index: u32,
+) -> array<vec2<u32>, 8> {
+  var inner_pad = zero_block();
+  var outer_pad = zero_block();
+  let ipad = vec2<u32>(0x36363636u, 0x36363636u);
+  let opad = vec2<u32>(0x5c5c5c5cu, 0x5c5c5c5cu);
+
+  for (var index = 0u; index < 16u; index += 1u) {
+    var chain_word = vec2<u32>(0u);
+    if (index < 4u) {
+      chain_word = parent[index + 4u];
+    }
+    inner_pad[index] = xor64(chain_word, ipad);
+    outer_pad[index] = xor64(chain_word, opad);
+  }
+
+  var inner_base = SHA512_IV;
+  var outer_base = SHA512_IV;
+  sha512_compress(&inner_base, &inner_pad);
+  sha512_compress(&outer_base, &outer_pad);
+
+  let k0 = parent[0].x;
+  let k1 = parent[0].y;
+  let k2 = parent[1].x;
+  let k3 = parent[1].y;
+  let k4 = parent[2].x;
+  let k5 = parent[2].y;
+  let k6 = parent[3].x;
+  let k7 = parent[3].y;
+
+  var message_block = zero_block();
+  message_block[0] = vec2<u32>(
+    k0 >> 8u,
+    ((k0 & 0xffu) << 24u) | (k1 >> 8u),
+  );
+  message_block[1] = vec2<u32>(
+    ((k1 & 0xffu) << 24u) | (k2 >> 8u),
+    ((k2 & 0xffu) << 24u) | (k3 >> 8u),
+  );
+  message_block[2] = vec2<u32>(
+    ((k3 & 0xffu) << 24u) | (k4 >> 8u),
+    ((k4 & 0xffu) << 24u) | (k5 >> 8u),
+  );
+  message_block[3] = vec2<u32>(
+    ((k5 & 0xffu) << 24u) | (k6 >> 8u),
+    ((k6 & 0xffu) << 24u) | (k7 >> 8u),
+  );
+  message_block[4] = vec2<u32>(
+    ((k7 & 0xffu) << 24u) | (child_index >> 8u),
+    ((child_index & 0xffu) << 24u) | 0x00800000u,
+  );
+  message_block[15] = vec2<u32>(0u, 1320u); // (128 + 37) * 8
+
+  var inner_hash = inner_base;
+  sha512_compress(&inner_hash, &message_block);
+  return hash_after_pad_64(outer_base, inner_hash);
+}
+
+fn derive_ton_path_seed(root_seed: array<vec2<u32>, 8>) -> array<vec2<u32>, 4> {
+  var node = slip10_master(root_seed);
+  node = slip10_child(node, 0x8000002cu); // 44'
+  node = slip10_child(node, 0x8000025fu); // 607'
+  node = slip10_child(node, 0x80000000u); // 0'
+  return array<vec2<u32>, 4>(node[0], node[1], node[2], node[3]);
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+  let candidate = global_id.x;
+  if (candidate >= params.count) {
+    return;
+  }
+
+  let derived_key = derive_bip39_seed(candidate);
+
   // Storage u32 values are little-endian. Byte swap each SHA word so a
   // Uint8Array readback is the canonical 64-byte BIP39 seed.
   let output_base = candidate * 16u;
   for (var index = 0u; index < 8u; index += 1u) {
     derived_seeds[output_base + index * 2u] = byte_swap32(derived_key[index].x);
     derived_seeds[output_base + index * 2u + 1u] = byte_swap32(derived_key[index].y);
+  }
+}
+
+@compute @workgroup_size(64)
+fn ton_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+  let candidate = global_id.x;
+  if (candidate >= params.count) {
+    return;
+  }
+
+  let ton_seed = derive_ton_path_seed(derive_bip39_seed(candidate));
+  let output_base = candidate * 8u;
+  for (var index = 0u; index < 4u; index += 1u) {
+    derived_seeds[output_base + index * 2u] = byte_swap32(ton_seed[index].x);
+    derived_seeds[output_base + index * 2u + 1u] = byte_swap32(ton_seed[index].y);
   }
 }
