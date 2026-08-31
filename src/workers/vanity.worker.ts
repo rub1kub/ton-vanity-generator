@@ -6,6 +6,13 @@ import {
   generateEnglishMnemonic12,
   generateEnglishMnemonic12Batch,
 } from '../lib/fast-mnemonic';
+import {
+  deriveTonMnemonicBasicSeed,
+  deriveTonMnemonicDefaultSeed,
+  generateTonMnemonic24,
+  generateTonMnemonic24Batch,
+  tonMnemonicEntropy,
+} from '../lib/ton-mnemonic';
 import { matchesVanitySuffix, validateSearchOptions } from '../lib/search';
 import type {
   FoundCandidate, FoundWallet, SearchOptions, SearchProgress,
@@ -17,6 +24,7 @@ const PROGRESS_INTERVAL_MS = 500;
 // end-to-end dispatch size: large enough to saturate the GPU without pushing
 // one batch into an excessive watchdog/interaction stall.
 const GPU_BATCH_SIZE = 512;
+const TON_MNEMONIC_GPU_BATCH_SIZE = 16_384;
 
 const workerScope = self as DedicatedWorkerGlobalScope;
 
@@ -124,6 +132,7 @@ function publishCandidate(
     mnemonic: wallet.mnemonic,
     version: options.version,
     addressFormat: options.addressFormat,
+    mnemonicScheme: options.mnemonicScheme,
     attempts: state.attempts,
     elapsedMs,
   };
@@ -132,6 +141,7 @@ function publishCandidate(
     address: pendingWallet.address,
     version: pendingWallet.version,
     addressFormat: pendingWallet.addressFormat,
+    mnemonicScheme: pendingWallet.mnemonicScheme,
     attempts: pendingWallet.attempts,
     elapsedMs: pendingWallet.elapsedMs,
   };
@@ -209,6 +219,7 @@ async function runCpuSearch(
             current.mnemonic,
             options.version,
             options.addressFormat,
+            options.mnemonicScheme,
           );
         } catch (error) {
           clearMnemonic(current.mnemonic);
@@ -238,6 +249,97 @@ async function runCpuSearch(
   }
 }
 
+async function runTonMnemonicCpuSearch(
+  runId: number,
+  workerId: number,
+  options: SearchOptions,
+  suffix: string,
+  state: RunState,
+): Promise<void> {
+  const [ton, cpuEd25519] = await Promise.all([tonRuntime, cpuEd25519Runtime]);
+  postResponse({ type: 'engine', workerId, engine: 'cpu' });
+
+  while (runId === activeRunId) {
+    const mnemonicText = generateTonMnemonic24();
+    const mnemonic = mnemonicText.split(' ');
+    let entropy: Uint8Array | undefined;
+    let basicSeed: Uint8Array | undefined;
+    let tonSeed: Uint8Array | undefined;
+    let publicKey: Uint8Array | undefined;
+    let address = '';
+
+    try {
+      entropy = tonMnemonicEntropy(mnemonic);
+      basicSeed = await deriveTonMnemonicBasicSeed(entropy);
+      if (runId !== activeRunId) {
+        clearMnemonic(mnemonic);
+        return;
+      }
+      if (basicSeed[0] !== 0) {
+        clearMnemonic(mnemonic);
+        continue;
+      }
+
+      tonSeed = await deriveTonMnemonicDefaultSeed(entropy);
+      if (runId !== activeRunId) {
+        clearMnemonic(mnemonic);
+        return;
+      }
+      publicKey = cpuEd25519.publicKeyFromSeed(tonSeed);
+      const publicKeyBuffer = Buffer.from(
+        publicKey.buffer as ArrayBuffer,
+        publicKey.byteOffset,
+        publicKey.byteLength,
+      );
+      address = ton.walletAddressFromPublicKey(
+        publicKeyBuffer,
+        options.version,
+        options.addressFormat,
+      );
+    } catch (error) {
+      clearMnemonic(mnemonic);
+      throw error;
+    } finally {
+      entropy?.fill(0);
+      basicSeed?.fill(0);
+      tonSeed?.fill(0);
+      publicKey?.fill(0);
+    }
+
+    if (runId !== activeRunId) {
+      clearMnemonic(mnemonic);
+      return;
+    }
+
+    state.attempts += 1;
+    state.sampleAddress = address;
+    if (matchesVanitySuffix(address, suffix, options.caseSensitive)) {
+      const verified = await ton.walletCandidateFromMnemonic(
+        mnemonic,
+        options.version,
+        options.addressFormat,
+        options.mnemonicScheme,
+      );
+      if (runId !== activeRunId) {
+        clearMnemonic(mnemonic);
+        clearMnemonic(verified.mnemonic);
+        return;
+      }
+      if (verified.address !== address) {
+        clearMnemonic(mnemonic);
+        clearMnemonic(verified.mnemonic);
+        throw new Error('TON mnemonic CPU winner failed canonical verification.');
+      }
+      clearMnemonic(mnemonic);
+      publishCandidate(runId, workerId, options, verified, state);
+      return;
+    }
+
+    clearMnemonic(mnemonic);
+    reportProgress(workerId, state);
+  }
+}
+
 async function runGpuSearch(
   runId: number,
   workerId: number,
@@ -251,17 +353,117 @@ async function runGpuSearch(
     cpuEd25519Runtime,
   ]);
   const accelerator = await WebGpuPbkdf2Accelerator.create({
-    maxBatchSize: GPU_BATCH_SIZE,
+    maxBatchSize: options.mnemonicScheme === 'ton-24'
+      ? TON_MNEMONIC_GPU_BATCH_SIZE
+      : GPU_BATCH_SIZE,
     powerPreference: 'high-performance',
     selfTest: true,
   });
   activeAccelerator = accelerator;
+
+  if (options.mnemonicScheme === 'ton-24' && workerId === 0) {
+    await accelerator.runTonMnemonicSelfTest();
+  }
 
   if (runId !== activeRunId) {
     destroyAccelerator();
     return;
   }
   postResponse({ type: 'engine', workerId, engine: 'gpu' });
+
+  if (options.mnemonicScheme === 'ton-24') {
+    while (runId === activeRunId) {
+      const mnemonicTexts = generateTonMnemonic24Batch(TON_MNEMONIC_GPU_BATCH_SIZE);
+      let seeds: Array<Uint8Array | null> = [];
+
+      try {
+        seeds = await accelerator.deriveTonMnemonicSeeds(mnemonicTexts);
+        if (runId !== activeRunId) return;
+
+        if (seeds.length !== mnemonicTexts.length) {
+          throw new Error('WebGPU returned an incomplete TON mnemonic seed batch.');
+        }
+        const derivedBatch: Array<
+          | { ok: true; mnemonic: string[]; address: string }
+          | { ok: false; mnemonic: string[]; error: unknown }
+        > = [];
+        mnemonicTexts.forEach((mnemonicText, index) => {
+          const seed = seeds[index];
+          if (!seed) return;
+          const mnemonic = mnemonicText.split(' ');
+          try {
+            const publicKey = cpuEd25519.publicKeyFromSeed(seed);
+            let address: string;
+            try {
+              const publicKeyBuffer = Buffer.from(
+                publicKey.buffer as ArrayBuffer,
+                publicKey.byteOffset,
+                publicKey.byteLength,
+              );
+              address = ton.walletAddressFromPublicKey(
+                publicKeyBuffer,
+                options.version,
+                options.addressFormat,
+              );
+            } finally {
+              publicKey.fill(0);
+            }
+            derivedBatch.push({ ok: true, mnemonic, address });
+          } catch (error) {
+            derivedBatch.push({ ok: false, mnemonic, error });
+          } finally {
+            seed.fill(0);
+          }
+        });
+
+        try {
+          const failure = derivedBatch.find((item) => !item.ok);
+          if (failure && !failure.ok) throw failure.error;
+          if (runId !== activeRunId) return;
+
+          let winner: Extract<(typeof derivedBatch)[number], { ok: true }> | undefined;
+          for (const item of derivedBatch) {
+            if (!item.ok) continue;
+            state.attempts += 1;
+            state.sampleAddress = item.address;
+            if (!winner && matchesVanitySuffix(
+              item.address,
+              suffix,
+              options.caseSensitive,
+            )) winner = item;
+          }
+
+          if (winner) {
+            const verified = await ton.walletCandidateFromMnemonic(
+              winner.mnemonic,
+              options.version,
+              options.addressFormat,
+              options.mnemonicScheme,
+            );
+            if (runId !== activeRunId) {
+              clearMnemonic(verified.mnemonic);
+              return;
+            }
+            if (verified.address !== winner.address) {
+              clearMnemonic(verified.mnemonic);
+              throw new Error('TON mnemonic GPU winner failed independent CPU verification.');
+            }
+            publishCandidate(runId, workerId, options, verified, state);
+            destroyAccelerator();
+            return;
+          }
+
+          reportProgress(workerId, state);
+        } finally {
+          for (const item of derivedBatch) clearMnemonic(item.mnemonic);
+        }
+      } finally {
+        for (const seed of seeds) seed?.fill(0);
+        mnemonicTexts.fill('');
+      }
+    }
+    return;
+  }
 
   while (runId === activeRunId) {
     const mnemonicTexts = generateEnglishMnemonic12Batch(GPU_BATCH_SIZE);
@@ -333,6 +535,7 @@ async function runGpuSearch(
             winner.mnemonic,
             options.version,
             options.addressFormat,
+            options.mnemonicScheme,
           );
           if (runId !== activeRunId) {
             clearMnemonic(verified.mnemonic);
@@ -391,7 +594,11 @@ async function runSearch(
     }
   }
 
-  await runCpuSearch(runId, workerId, options, suffix, state);
+  if (options.mnemonicScheme === 'ton-24') {
+    await runTonMnemonicCpuSearch(runId, workerId, options, suffix, state);
+  } else {
+    await runCpuSearch(runId, workerId, options, suffix, state);
+  }
 }
 
 workerScope.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {

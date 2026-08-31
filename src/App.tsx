@@ -22,8 +22,8 @@ import {
   type PerformanceCalibrationResult, type PerformanceCalibrationStep,
 } from './lib/performance-calibration';
 import type {
-  AddressFormat, ComputeEngine, FoundCandidate, FoundWallet, SearchOptions,
-  SearchProgress, WalletVersion, WorkerResponse,
+  AddressFormat, ComputeEngine, FoundCandidate, FoundWallet, MnemonicScheme,
+  SearchOptions, SearchProgress, WalletVersion, WorkerResponse,
 } from './types';
 
 type Screen = 'setup' | 'searching' | 'found' | 'seed-ready' | 'seed';
@@ -122,6 +122,7 @@ export function App() {
   const [screen, setScreen] = useState<Screen>('setup');
   const [suffix, setSuffix] = useState('GRAM');
   const [version, setVersion] = useState<WalletVersion>('w5');
+  const [mnemonicScheme, setMnemonicScheme] = useState<MnemonicScheme>('multichain-12');
   const [addressFormat, setAddressFormat] = useState<AddressFormat>('non-bounceable');
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [safeToReveal, setSafeToReveal] = useState(false);
@@ -509,6 +510,7 @@ export function App() {
 
     const baseOptions: SearchOptions = {
       suffix: cleanSuffix, version, addressFormat, caseSensitive, engine: nextEngine, locale,
+      mnemonicScheme,
     };
 
     const nextWorkers = nextWorkerPlan.map((workerEngine, workerId) => {
@@ -553,7 +555,9 @@ export function App() {
         }
         if (message.type === 'revealed') {
           setFoundWallet(message.wallet); setSeedVisible(true); setRevealPending(false);
-          setLiveMessage(t('seed.title'));
+          setLiveMessage(t('seed.title', {
+            count: message.wallet.mnemonicScheme === 'ton-24' ? 24 : 12,
+          }));
           setScreen('seed'); stopWorkers();
         }
         if (message.type === 'error') {
@@ -573,7 +577,7 @@ export function App() {
     });
     workersRef.current = nextWorkers;
   }, [addressFormat, aggregateProgress, announceFoundWallet, caseSensitive, cleanSuffix,
-    concurrencyPolicy, gpuAvailable, locale, stopWorkers, t, version]);
+    concurrencyPolicy, gpuAvailable, locale, mnemonicScheme, stopWorkers, t, version]);
 
   const benchmarkPerformanceStep = useCallback((
     step: PerformanceCalibrationStep,
@@ -654,7 +658,9 @@ export function App() {
     startupTimeoutId = window.setTimeout(() => {
       failed = true;
       finish();
-    }, Math.max(6_000, step.durationMs * 3));
+    }, mnemonicScheme === 'ton-24'
+      ? 30_000
+      : Math.max(6_000, step.durationMs * 3));
     const benchmarkOptions: SearchOptions = {
       // Eight exact underscores are valid TON base64url characters but have a
       // negligible hit probability during a few-second calibration sample.
@@ -664,6 +670,7 @@ export function App() {
       caseSensitive: true,
       engine: step.engine,
       locale,
+      mnemonicScheme,
     };
 
     calibrationWorkersRef.current = workers;
@@ -701,7 +708,7 @@ export function App() {
       failed = true;
       finish();
     }
-  }), [addressFormat, locale, version]);
+  }), [addressFormat, locale, mnemonicScheme, version]);
 
   const startSearch = useCallback(() => {
     const nextEngine = concurrencyPolicy.gpuAllowed ? engine : 'cpu';
@@ -890,6 +897,23 @@ export function App() {
         <details className="advanced-settings">
           <summary>{t('advanced.title')}</summary>
           <div className="advanced-settings__body">
+            <div className="advanced-group">
+              <div className="setting-heading">
+                <span className="setting-icon setting-icon--violet"><LockKey weight="fill" /></span>
+                <span><strong>{t('mnemonic.title')}</strong><small>{t('mnemonic.description')}</small></span>
+              </div>
+              <div className="segmented" role="group" aria-label={t('mnemonic.title')}>
+                <button type="button" aria-pressed={mnemonicScheme === 'multichain-12'} disabled={calibrationRunning}
+                  className={mnemonicScheme === 'multichain-12' ? 'segmented__item is-active' : 'segmented__item'}
+                  onClick={() => { setMnemonicScheme('multichain-12'); setCalibrationResult(null); }}>
+                  {t('mnemonic.12')} <span>{t('mnemonic.fast')}</span></button>
+                <button type="button" aria-pressed={mnemonicScheme === 'ton-24'} disabled={calibrationRunning}
+                  className={mnemonicScheme === 'ton-24' ? 'segmented__item is-active' : 'segmented__item'}
+                  onClick={() => { setMnemonicScheme('ton-24'); setCalibrationResult(null); }}>
+                  {t('mnemonic.24')} <span>TON</span></button>
+              </div>
+            </div>
+
             {concurrencyPolicy.gpuAllowed ? <div className="advanced-group">
               <div className="setting-heading">
                 <span className="setting-icon setting-icon--orange"><GraphicsCard weight="fill" /></span>
@@ -1086,7 +1110,9 @@ export function App() {
     <>
       <ScreenSticker screen="seed-ready" locale={locale} />
       <div className="hero-copy"><span className="secret-pill"><LockKey weight="fill" /> {t('seedReady.status')}</span>
-        <h1 tabIndex={-1}>{t('seedReady.title')}</h1><p>{t('seedReady.description')}</p></div>
+        <h1 tabIndex={-1}>{t('seedReady.title')}</h1><p>{t('seedReady.description', {
+          count: foundCandidate.mnemonicScheme === 'ton-24' ? 24 : 12,
+        })}</p></div>
       <div className="seed-warning"><ShieldCheck weight="fill" />
         <span><strong>{t('seed.warningTitle')}</strong><small>{t('seed.warningDescription')}</small></span></div>
       <label className="consent-card">
@@ -1095,7 +1121,9 @@ export function App() {
         <span><strong>{t('seedReady.check')}</strong><small>{t('seedReady.checkDescription')}</small></span>
       </label>
       <button type="button" className="primary-button" disabled={!safeToReveal || revealPending} onClick={revealSeed}>
-        {revealPending ? t('found.revealPending') : t('seedReady.reveal')}</button>
+        {revealPending ? t('found.revealPending') : t('seedReady.reveal', {
+          count: foundCandidate.mnemonicScheme === 'ton-24' ? 24 : 12,
+        })}</button>
       <button type="button" className="text-button" onClick={() => setScreen('found')}>{t('seedReady.back')}</button>
     </>
   );
@@ -1104,7 +1132,9 @@ export function App() {
     <>
       <ScreenSticker screen="seed" locale={locale} />
       <div className="hero-copy"><span className="secret-pill"><LockKey weight="fill" /> {t('seed.status')}</span>
-        <h1 tabIndex={-1}>{t('seed.title')}</h1><p>{t('seed.description')}</p></div>
+        <h1 tabIndex={-1}>{t('seed.title', {
+          count: foundWallet.mnemonicScheme === 'ton-24' ? 24 : 12,
+        })}</h1><p>{t('seed.description')}</p></div>
       <div className="seed-warning"><ShieldCheck weight="fill" />
         <span><strong>{t('seed.warningTitle')}</strong><small>{t('seed.warningDescription')}</small></span></div>
       <section className={`panel seed-panel ${seedVisible ? '' : 'seed-panel--hidden'}`}>
@@ -1115,12 +1145,18 @@ export function App() {
           <ol className="seed-grid">
             {foundWallet.mnemonic.map((word, index) => <li key={`${word}-${index}`}><span>{index + 1}</span><strong>{word}</strong></li>)}
           </ol>
-        ) : <div className="seed-hidden-state"><EyeSlash weight="fill" />{t('seed.hidden')}</div>}
-        <div className="seed-standard"><span>BIP39 · SLIP-0010</span><code>m/44&apos;/607&apos;/0&apos;</code></div>
+        ) : <div className="seed-hidden-state"><EyeSlash weight="fill" />{t('seed.hidden', {
+          count: foundWallet.mnemonicScheme === 'ton-24' ? 24 : 12,
+        })}</div>}
+        <div className="seed-standard"><span>{foundWallet.mnemonicScheme === 'ton-24'
+          ? 'TON Mnemonic' : 'BIP39 · SLIP-0010'}</span><code>{foundWallet.mnemonicScheme === 'ton-24'
+          ? 'TON default seed' : "m/44'/607'/0'"}</code></div>
         <button type="button" className="copy-seed-button" disabled={!seedVisible}
           onClick={() => void copyText(foundWallet.mnemonic.join(' '), 'seed')}>
           {copyTarget === 'seed' ? <Check weight="bold" /> : <Copy weight="bold" />}
-          {copyTarget === 'seed' ? t('seed.copied') : t('seed.copy')}</button>
+          {copyTarget === 'seed' ? t('seed.copied') : t('seed.copy', {
+            count: foundWallet.mnemonicScheme === 'ton-24' ? 24 : 12,
+          })}</button>
       </section>
       <button type="button" className="primary-button" onClick={reset}>{t('seed.restart')}</button>
       <p className="privacy-note"><LockKey weight="fill" /> {t('seed.notStored')}</p>

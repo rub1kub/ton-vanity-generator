@@ -61,6 +61,7 @@ describe('validateSearchOptions', () => {
         caseSensitive: true,
         engine: 'cpu',
         locale: 'en',
+        mnemonicScheme: 'multichain-12',
       }),
     ).toEqual({ valid: true, suffix: 'GRAM' });
   });

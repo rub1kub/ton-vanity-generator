@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { deriveEd25519Path, keyPairFromSeed } from '@ton/crypto';
+import { deriveEd25519Path, keyPairFromSeed, mnemonicValidate } from '@ton/crypto';
 import { WalletContractV4, WalletContractV5R1 } from '@ton/ton';
 import { Buffer } from 'buffer';
 
@@ -184,6 +184,18 @@ describe('generateWalletCandidate', () => {
 
     expect(candidate.mnemonic).toHaveLength(12);
     expect(validateMnemonic(candidate.mnemonic.join(' '), wordlist)).toBe(true);
+    expect(candidate.address).toMatch(/^UQ[A-Za-z0-9_-]{46}$/);
+  });
+
+  it('creates an importable classic 24-word TON candidate', async () => {
+    const candidate = await generateWalletCandidate(
+      'w5',
+      'non-bounceable',
+      'ton-24',
+    );
+
+    expect(candidate.mnemonic).toHaveLength(24);
+    expect(await mnemonicValidate(candidate.mnemonic)).toBe(true);
     expect(candidate.address).toMatch(/^UQ[A-Za-z0-9_-]{46}$/);
   });
 });

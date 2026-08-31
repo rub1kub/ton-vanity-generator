@@ -8,7 +8,8 @@ entirely in the browser at [`tonsuite.org/generator/`](https://tonsuite.org/gene
 - Searches for a user-chosen ending in a URL-safe TON friendly address.
 - Supports mainnet W5 v5r1 and Wallet v4R2.
 - Supports non-bounceable `UQ…` and bounceable `EQ…` display formats.
-- Uses the current TEP-3 12-word BIP39 format and `m/44'/607'/0'` path.
+- Lets the user choose the recommended 12-word TEP-3 Multichain format
+  (`m/44'/607'/0'`) or the classic 24-word TON mnemonic format.
 - Runs work in multiple dedicated Web Workers.
 - Can pause, resume and change CPU/GPU power without losing the attempt count.
 - Offers one compact, local auto-tune control that benchmarks the full pipeline
@@ -27,8 +28,10 @@ entirely in the browser at [`tonsuite.org/generator/`](https://tonsuite.org/gene
 Vanity search is probabilistic. A case-sensitive suffix of length `L` needs
 about `64^L` candidates on average. Ignoring letter case reduces that to about
 `32^L` for all-letter suffixes. BIP39/SLIP-0010 derivation is still non-trivial,
-so long endings can take days, months or longer even with several workers. The
-UI reports the measured speed rather than promising a deadline.
+so long endings can take days, months or longer even with several workers.
+Classic 24-word TON mnemonics use a substantially heavier KDF and therefore
+search more slowly than the default 12-word mode. The UI reports measured speed
+rather than promising a deadline.
 
 Never fund a generated wallet before you have safely recorded the recovery
 phrase and tested that it restores the same address in a compatible wallet.
@@ -56,8 +59,11 @@ Static output is written to `dist/`.
 - React + TypeScript + Vite for the UI.
 - A specialized CSPRNG-backed 128-bit BIP39 encoder creates 12-word English
   mnemonics and is differential-tested against `@scure/bip39`.
+- A separate CSPRNG-backed generator creates classic 24-word TON mnemonic
+  candidates, performs the TON basic-seed check, and derives `TON default seed`.
 - WebGPU accelerates BIP39 PBKDF2-HMAC-SHA512 plus SLIP-0010 in self-tested
-  batches. The original BIP39 root-seed API and known-answer test remain.
+  batches, as well as the TON-specific 24-word validation and 100,000-round
+  derivation. Both paths use known-answer tests.
 - The ordinary `libsodium-wrappers` WASM build accelerates Ed25519 public-key
   derivation, with an RFC 8032 self-test and automatic noble fallback.
 - Canonical W5/v4R2 contract code is cached once; only the small data Cell and

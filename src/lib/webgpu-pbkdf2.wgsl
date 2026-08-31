@@ -5,6 +5,8 @@
 const WORKGROUP_SIZE: u32 = 64u;
 const MNEMONIC_STRIDE_WORDS: u32 = 32u; // 128 UTF-8 bytes
 const PBKDF2_ITERATIONS: u32 = 2048u;
+const TON_BASIC_ITERATIONS: u32 = 390u;
+const TON_DEFAULT_ITERATIONS: u32 = 100000u;
 
 struct Params {
   count: u32,
@@ -259,6 +261,27 @@ fn byte_swap32(value: u32) -> u32 {
     ((value & 0xff000000u) >> 24u);
 }
 
+fn derive_from_first_block(
+  inner_base: array<vec2<u32>, 8>,
+  outer_base: array<vec2<u32>, 8>,
+  first_block: array<vec2<u32>, 16>,
+  iterations: u32,
+) -> array<vec2<u32>, 8> {
+  var first_inner = inner_base;
+  var mutable_first_block = first_block;
+  sha512_compress(&first_inner, &mutable_first_block);
+  var current_u = hash_after_pad_64(outer_base, first_inner);
+  var derived_key = current_u;
+
+  for (var iteration = 1u; iteration < iterations; iteration += 1u) {
+    current_u = hmac_64(inner_base, outer_base, current_u);
+    for (var index = 0u; index < 8u; index += 1u) {
+      derived_key[index] = xor64(derived_key[index], current_u[index]);
+    }
+  }
+  return derived_key;
+}
+
 fn derive_bip39_seed(candidate: u32) -> array<vec2<u32>, 8> {
   var inner_pad = zero_block();
   var outer_pad = zero_block();
@@ -280,19 +303,65 @@ fn derive_bip39_seed(candidate: u32) -> array<vec2<u32>, 8> {
   first_block[0] = vec2<u32>(0x6d6e656du, 0x6f6e6963u); // "mnemonic"
   first_block[1] = vec2<u32>(0x00000001u, 0x80000000u);
   first_block[15] = vec2<u32>(0u, 1120u); // (128 + 12) * 8
-  var first_inner = inner_base;
-  sha512_compress(&first_inner, &first_block);
-  var current_u = hash_after_pad_64(outer_base, first_inner);
-  var derived_key = current_u;
+  return derive_from_first_block(inner_base, outer_base, first_block, PBKDF2_ITERATIONS);
+}
 
-  for (var iteration = 1u; iteration < PBKDF2_ITERATIONS; iteration += 1u) {
-    current_u = hmac_64(inner_base, outer_base, current_u);
-    for (var index = 0u; index < 8u; index += 1u) {
-      derived_key[index] = xor64(derived_key[index], current_u[index]);
-    }
+// The CPU packs HMAC-SHA512(mnemonic text, empty password) into the input
+// block. Validation and default-seed derivation use separate dispatches so the
+// expensive 100,000-round pass contains only valid candidates and keeps GPU
+// lanes densely occupied.
+fn derive_ton24_from_block(
+  candidate: u32,
+  first_block: array<vec2<u32>, 16>,
+  iterations: u32,
+) -> array<vec2<u32>, 8> {
+  var inner_pad = zero_block();
+  var outer_pad = zero_block();
+  let ipad = vec2<u32>(0x36363636u, 0x36363636u);
+  let opad = vec2<u32>(0x5c5c5c5cu, 0x5c5c5c5cu);
+  for (var index = 0u; index < 16u; index += 1u) {
+    let key_word = load_key_u64(candidate, index);
+    inner_pad[index] = xor64(key_word, ipad);
+    outer_pad[index] = xor64(key_word, opad);
   }
 
-  return derived_key;
+  var inner_base = SHA512_IV;
+  var outer_base = SHA512_IV;
+  sha512_compress(&inner_base, &inner_pad);
+  sha512_compress(&outer_base, &outer_pad);
+
+  return derive_from_first_block(
+    inner_base,
+    outer_base,
+    first_block,
+    iterations,
+  );
+}
+
+fn derive_ton24_basic_seed(candidate: u32) -> array<vec2<u32>, 8> {
+  var basic_block = zero_block();
+  basic_block[0] = vec2<u32>(0x544f4e20u, 0x73656564u); // "TON seed"
+  basic_block[1] = vec2<u32>(0x20766572u, 0x73696f6eu); // " version"
+  basic_block[2] = vec2<u32>(0x00000001u, 0x80000000u);
+  basic_block[15] = vec2<u32>(0u, 1184u); // (128 + 20) * 8
+  return derive_ton24_from_block(
+    candidate,
+    basic_block,
+    TON_BASIC_ITERATIONS,
+  );
+}
+
+fn derive_ton24_default_seed(candidate: u32) -> array<vec2<u32>, 8> {
+  var default_block = zero_block();
+  default_block[0] = vec2<u32>(0x544f4e20u, 0x64656661u); // "TON defa"
+  default_block[1] = vec2<u32>(0x756c7420u, 0x73656564u); // "ult seed"
+  default_block[2] = vec2<u32>(0x00000001u, 0x80000000u);
+  default_block[15] = vec2<u32>(0u, 1184u); // (128 + 20) * 8
+  return derive_ton24_from_block(
+    candidate,
+    default_block,
+    TON_DEFAULT_ITERATIONS,
+  );
 }
 
 // HMAC-SHA512(key = "ed25519 seed", message = 64-byte BIP39 root seed).
@@ -421,5 +490,31 @@ fn ton_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   for (var index = 0u; index < 4u; index += 1u) {
     derived_seeds[output_base + index * 2u] = byte_swap32(ton_seed[index].x);
     derived_seeds[output_base + index * 2u + 1u] = byte_swap32(ton_seed[index].y);
+  }
+}
+
+@compute @workgroup_size(64)
+fn ton24_validate_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+  let candidate = global_id.x;
+  if (candidate >= params.count) {
+    return;
+  }
+
+  let basic_seed = derive_ton24_basic_seed(candidate);
+  derived_seeds[candidate] = select(0u, 1u, (basic_seed[0].x >> 24u) == 0u);
+}
+
+@compute @workgroup_size(64)
+fn ton24_derive_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+  let candidate = global_id.x;
+  if (candidate >= params.count) {
+    return;
+  }
+
+  let seed = derive_ton24_default_seed(candidate);
+  let output_base = candidate * 8u;
+  for (var index = 0u; index < 4u; index += 1u) {
+    derived_seeds[output_base + index * 2u] = byte_swap32(seed[index].x);
+    derived_seeds[output_base + index * 2u + 1u] = byte_swap32(seed[index].y);
   }
 }

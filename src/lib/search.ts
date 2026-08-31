@@ -69,5 +69,12 @@ export function validateSearchOptions(
     return { valid: false, error: 'invalid-characters' };
   }
 
+  if (
+    options.mnemonicScheme !== 'multichain-12' &&
+    options.mnemonicScheme !== 'ton-24'
+  ) {
+    return { valid: false, error: 'invalid-characters' };
+  }
+
   return validateVanitySuffix(options.suffix);
 }

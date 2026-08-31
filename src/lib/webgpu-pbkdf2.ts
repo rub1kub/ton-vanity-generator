@@ -1,9 +1,14 @@
 import pbkdf2Shader from './webgpu-pbkdf2.wgsl?raw';
+import {
+  TON_MNEMONIC_SEED_BYTES,
+  tonMnemonicEntropy,
+} from './ton-mnemonic';
 
 export const BIP39_PBKDF2_ITERATIONS = 2_048;
 export const BIP39_SEED_BYTES = 64;
 export const BIP39_MNEMONIC_WORDS = 12;
 export const TON_PATH_SEED_BYTES = 32;
+export const TON_MNEMONIC_VALIDATION_BYTES = 4;
 
 const MNEMONIC_STRIDE_BYTES = 128;
 const WORKGROUP_SIZE = 64;
@@ -16,6 +21,11 @@ const SELF_TEST_SEED_HEX =
   '9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4';
 const SELF_TEST_TON_PATH_SEED_HEX =
   'b477ef5ed17fb8a2b8faddd7a9835a227243a82c70b190c7af4896155aa7df9f';
+const SELF_TEST_TON_MNEMONIC =
+  'panic job where tourist large stand genius lunch normal enough helmet honey ' +
+  'torch fragile flock symbol slender bicycle off park way phrase axis paddle';
+const SELF_TEST_TON_MNEMONIC_SEED_HEX =
+  'e9c96cef04c0826acbedd3f885d48ffb682d955dec654240f2593ef1c410499b';
 
 // WebGPU constants are intentionally kept local so this module type-checks
 // without adding a runtime dependency on @webgpu/types.
@@ -163,6 +173,34 @@ export function packMnemonicBatch(
   };
 }
 
+/** Packs canonical TON mnemonic entropy into zero-padded 128-byte key blocks. */
+export function packTonMnemonicEntropyBatch(
+  mnemonics: readonly string[],
+): PackedMnemonicBatch {
+  if (mnemonics.length === 0) {
+    return { words: new Uint32Array(0), count: 0, strideBytes: MNEMONIC_STRIDE_BYTES };
+  }
+
+  const words = new Uint32Array(
+    (mnemonics.length * MNEMONIC_STRIDE_BYTES) / Uint32Array.BYTES_PER_ELEMENT,
+  );
+  const bytes = new Uint8Array(words.buffer);
+  try {
+    mnemonics.forEach((mnemonic, index) => {
+      const entropy = tonMnemonicEntropy(mnemonic);
+      try {
+        bytes.set(entropy, index * MNEMONIC_STRIDE_BYTES);
+      } finally {
+        entropy.fill(0);
+      }
+    });
+    return { words, count: mnemonics.length, strideBytes: MNEMONIC_STRIDE_BYTES };
+  } catch (error) {
+    words.fill(0);
+    throw error;
+  }
+}
+
 export function hexToBytes(hex: string): Uint8Array {
   if (!/^(?:[0-9a-fA-F]{2})+$/.test(hex)) {
     throw new Error('Expected an even-length hexadecimal string.');
@@ -248,6 +286,8 @@ function adapterInfo(adapter: any): WebGpuAdapterInfo | undefined {
 async function compilePipelines(device: any): Promise<{
   rootSeed: any;
   tonPathSeed: any;
+  tonMnemonicValidation: any;
+  tonMnemonicSeed: any;
 }> {
   const shaderModule = device.createShaderModule({
     label: 'TON Suite BIP39 PBKDF2-HMAC-SHA512',
@@ -269,7 +309,10 @@ async function compilePipelines(device: any): Promise<{
     }
   }
 
-  const createPipeline = (entryPoint: 'main' | 'ton_main', label: string) => {
+  const createPipeline = (
+    entryPoint: 'main' | 'ton_main' | 'ton24_validate_main' | 'ton24_derive_main',
+    label: string,
+  ) => {
     const descriptor = {
       label,
       layout: 'auto',
@@ -280,11 +323,13 @@ async function compilePipelines(device: any): Promise<{
       : device.createComputePipeline(descriptor);
   };
 
-  const [rootSeed, tonPathSeed] = await Promise.all([
+  const [rootSeed, tonPathSeed, tonMnemonicValidation, tonMnemonicSeed] = await Promise.all([
     createPipeline('main', 'BIP39 PBKDF2-HMAC-SHA512 pipeline'),
     createPipeline('ton_main', 'BIP39 + TON SLIP-0010 pipeline'),
+    createPipeline('ton24_validate_main', 'TON 24-word mnemonic validation pipeline'),
+    createPipeline('ton24_derive_main', 'TON 24-word mnemonic seed pipeline'),
   ]);
-  return { rootSeed, tonPathSeed };
+  return { rootSeed, tonPathSeed, tonMnemonicValidation, tonMnemonicSeed };
 }
 
 async function wipeAndDestroyBuffers(
@@ -327,6 +372,8 @@ export class WebGpuPbkdf2Accelerator {
     private readonly device: any,
     private readonly rootSeedPipeline: any,
     private readonly tonPathSeedPipeline: any,
+    private readonly tonMnemonicValidationPipeline: any,
+    private readonly tonMnemonicSeedPipeline: any,
     maxBatchSize: number,
     selfTestPassed: boolean,
   ) {
@@ -392,6 +439,8 @@ export class WebGpuPbkdf2Accelerator {
         device,
         pipelines.rootSeed,
         pipelines.tonPathSeed,
+        pipelines.tonMnemonicValidation,
+        pipelines.tonMnemonicSeed,
         maxBatchSize,
         false,
       );
@@ -426,6 +475,26 @@ export class WebGpuPbkdf2Accelerator {
    */
   async deriveTonSeeds(mnemonics: readonly string[]): Promise<Uint8Array[]> {
     return this.deriveInChunks(mnemonics, 'ton');
+  }
+
+  /** Returns null for random 24-word phrases that fail TON's basic-seed check. */
+  async deriveTonMnemonicSeeds(
+    mnemonics: readonly string[],
+  ): Promise<Array<Uint8Array | null>> {
+    this.assertUsable();
+    if (mnemonics.length === 0) return [];
+
+    const seeds: Array<Uint8Array | null> = [];
+    try {
+      for (let offset = 0; offset < mnemonics.length; offset += this.supportInfo.maxBatchSize) {
+        const chunk = mnemonics.slice(offset, offset + this.supportInfo.maxBatchSize);
+        seeds.push(...(await this.deriveTonMnemonicChunk(chunk)));
+      }
+      return seeds;
+    } catch (error) {
+      for (const seed of seeds) seed?.fill(0);
+      throw error;
+    }
   }
 
   private async deriveInChunks(
@@ -515,6 +584,24 @@ export class WebGpuPbkdf2Accelerator {
     }
   }
 
+  async runTonMnemonicSelfTest(): Promise<void> {
+    this.assertUsable();
+    const expected = hexToBytes(SELF_TEST_TON_MNEMONIC_SEED_HEX);
+    let actual: Uint8Array | null | undefined;
+    try {
+      [actual] = await this.deriveTonMnemonicSeeds([SELF_TEST_TON_MNEMONIC]);
+      if (!actual || !bytesEqual(actual, expected)) {
+        throw new WebGpuPbkdf2Error(
+          'WebGPU TON 24-word mnemonic failed its known-answer test.',
+          'self-test',
+        );
+      }
+    } finally {
+      actual?.fill(0);
+      expected.fill(0);
+    }
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -537,6 +624,156 @@ export class WebGpuPbkdf2Accelerator {
         'The WebGPU device was lost.',
         'device-lost',
       );
+    }
+  }
+
+  private async deriveTonMnemonicChunk(
+    mnemonics: readonly string[],
+  ): Promise<Array<Uint8Array | null>> {
+    let validationOutput: Uint8Array | undefined;
+    let seedOutput: Uint8Array | undefined;
+    try {
+      validationOutput = await this.dispatchTonMnemonicPacked(
+        packTonMnemonicEntropyBatch(mnemonics),
+        this.tonMnemonicValidationPipeline,
+        TON_MNEMONIC_VALIDATION_BYTES,
+        'TON mnemonic validation',
+      );
+      const validationView = new DataView(
+        validationOutput.buffer,
+        validationOutput.byteOffset,
+        validationOutput.byteLength,
+      );
+      const validIndexes: number[] = [];
+      for (let index = 0; index < mnemonics.length; index += 1) {
+        if (validationView.getUint32(index * TON_MNEMONIC_VALIDATION_BYTES, true) === 1) {
+          validIndexes.push(index);
+        }
+      }
+      if (validIndexes.length === 0) {
+        return Array.from({ length: mnemonics.length }, () => null);
+      }
+
+      const validMnemonics = validIndexes.map((index) => mnemonics[index]!);
+      seedOutput = await this.dispatchTonMnemonicPacked(
+        packTonMnemonicEntropyBatch(validMnemonics),
+        this.tonMnemonicSeedPipeline,
+        TON_MNEMONIC_SEED_BYTES,
+        'TON mnemonic default-seed derivation',
+      );
+      const results: Array<Uint8Array | null> = new Array(mnemonics.length).fill(null);
+      validIndexes.forEach((sourceIndex, outputIndex) => {
+        results[sourceIndex] = seedOutput!.slice(
+          outputIndex * TON_MNEMONIC_SEED_BYTES,
+          (outputIndex + 1) * TON_MNEMONIC_SEED_BYTES,
+        );
+      });
+      return results;
+    } finally {
+      validationOutput?.fill(0);
+      seedOutput?.fill(0);
+    }
+  }
+
+  private async dispatchTonMnemonicPacked(
+    packed: PackedMnemonicBatch,
+    pipeline: any,
+    outputStrideBytes: number,
+    label: string,
+  ): Promise<Uint8Array> {
+    const inputSize = packed.words.byteLength;
+    const outputSize = packed.count * outputStrideBytes;
+    const params = new Uint32Array([packed.count, 0, 0, 0]);
+
+    let inputBuffer: any;
+    let outputBuffer: any;
+    let paramsBuffer: any;
+    let readbackBuffer: any;
+    let mapped = false;
+    let rawOutput: Uint8Array | undefined;
+    let succeeded = false;
+
+    try {
+      inputBuffer = this.device.createBuffer({
+        label: `${label} HMAC key blocks`,
+        size: inputSize,
+        usage: GPU_BUFFER_USAGE.STORAGE | GPU_BUFFER_USAGE.COPY_DST,
+      });
+      outputBuffer = this.device.createBuffer({
+        label: `${label} output`,
+        size: outputSize,
+        usage:
+          GPU_BUFFER_USAGE.STORAGE |
+          GPU_BUFFER_USAGE.COPY_SRC |
+          GPU_BUFFER_USAGE.COPY_DST,
+      });
+      paramsBuffer = this.device.createBuffer({
+        label: `${label} batch parameters`,
+        size: params.byteLength,
+        usage: GPU_BUFFER_USAGE.UNIFORM | GPU_BUFFER_USAGE.COPY_DST,
+      });
+      readbackBuffer = this.device.createBuffer({
+        label: `${label} readback`,
+        size: outputSize,
+        usage: GPU_BUFFER_USAGE.MAP_READ | GPU_BUFFER_USAGE.COPY_DST,
+      });
+
+      this.device.queue.writeBuffer(inputBuffer, 0, packed.words);
+      this.device.queue.writeBuffer(paramsBuffer, 0, params);
+
+      const bindGroup = this.device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: inputBuffer } },
+          { binding: 1, resource: { buffer: outputBuffer } },
+          { binding: 2, resource: { buffer: paramsBuffer } },
+        ],
+      });
+      const commandEncoder = this.device.createCommandEncoder({
+        label: `${label} command encoder`,
+      });
+      const pass = commandEncoder.beginComputePass({
+        label,
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(Math.ceil(packed.count / WORKGROUP_SIZE));
+      pass.end();
+      commandEncoder.copyBufferToBuffer(
+        outputBuffer,
+        0,
+        readbackBuffer,
+        0,
+        outputSize,
+      );
+      this.device.queue.submit([commandEncoder.finish()]);
+
+      await readbackBuffer.mapAsync(GPU_MAP_MODE_READ, 0, outputSize);
+      mapped = true;
+      rawOutput = new Uint8Array(
+        readbackBuffer.getMappedRange(0, outputSize),
+      ).slice();
+      readbackBuffer.unmap();
+      mapped = false;
+      succeeded = true;
+      return rawOutput;
+    } finally {
+      if (mapped) {
+        try {
+          readbackBuffer?.unmap();
+        } catch {
+          // Ignore cleanup errors after device loss.
+        }
+      }
+      packed.words.fill(0);
+      params.fill(0);
+      if (!succeeded) rawOutput?.fill(0);
+      await wipeAndDestroyBuffers(this.device, [
+        { buffer: inputBuffer, size: inputSize },
+        { buffer: outputBuffer, size: outputSize },
+        { buffer: paramsBuffer, size: params.byteLength },
+        { buffer: readbackBuffer, size: outputSize },
+      ]);
     }
   }
 

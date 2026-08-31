@@ -10,14 +10,19 @@ import {
   encodeBip39Mnemonic,
   hexToBytes,
   packMnemonicBatch,
+  packTonMnemonicEntropyBatch,
 } from './webgpu-pbkdf2';
 import { deriveTonPathSeed } from './ton';
+import { tonMnemonicEntropy } from './ton-mnemonic';
 
 const VECTOR_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const VECTOR_SEED_HEX =
   '5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1' +
   '9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4';
+const TON_VECTOR_MNEMONIC =
+  'panic job where tourist large stand genius lunch normal enough helmet honey ' +
+  'torch fragile flock symbol slender bicycle off park way phrase axis paddle';
 
 describe('BIP39 mnemonic helpers', () => {
   it('normalizes whitespace and Unicode with NFKD', () => {
@@ -60,6 +65,20 @@ describe('BIP39 mnemonic helpers', () => {
     );
 
     packed.words.fill(0);
+  });
+
+  it('packs canonical TON entropy and zero-pads the rest of each key block', () => {
+    const packed = packTonMnemonicEntropyBatch([TON_VECTOR_MNEMONIC]);
+    const bytes = new Uint8Array(packed.words.buffer);
+    const expected = tonMnemonicEntropy(TON_VECTOR_MNEMONIC);
+    try {
+      expect(packed.count).toBe(1);
+      expect(bytes.slice(0, 64)).toEqual(expected);
+      expect(bytes.slice(64)).toEqual(new Uint8Array(64));
+    } finally {
+      expected.fill(0);
+      packed.words.fill(0);
+    }
   });
 });
 

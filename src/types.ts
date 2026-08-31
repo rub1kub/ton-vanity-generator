@@ -2,6 +2,7 @@ export type WalletVersion = 'v4r2' | 'w5';
 export type AddressFormat = 'non-bounceable' | 'bounceable';
 export type ComputeEngine = 'cpu' | 'gpu';
 export type SearchLocale = 'ru' | 'en';
+export type MnemonicScheme = 'multichain-12' | 'ton-24';
 
 export interface SearchOptions {
   suffix: string;
@@ -10,6 +11,7 @@ export interface SearchOptions {
   caseSensitive: boolean;
   engine: ComputeEngine;
   locale: SearchLocale;
+  mnemonicScheme: MnemonicScheme;
 }
 
 export interface SearchProgress {
@@ -23,6 +25,7 @@ export interface FoundCandidate {
   address: string;
   version: WalletVersion;
   addressFormat: AddressFormat;
+  mnemonicScheme: MnemonicScheme;
   attempts: number;
   elapsedMs: number;
 }

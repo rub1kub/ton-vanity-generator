@@ -3,14 +3,16 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { keyPairFromSeed } from '@ton/crypto';
+import {
+  keyPairFromSeed, mnemonicNew, mnemonicToPrivateKey, mnemonicValidate,
+} from '@ton/crypto';
 import {
   beginCell, contractAddress, WalletContractV4, WalletContractV5R1,
   type Cell,
 } from '@ton/ton';
 import { Buffer } from 'buffer';
 
-import type { AddressFormat, WalletVersion } from '../types';
+import type { AddressFormat, MnemonicScheme, WalletVersion } from '../types';
 
 const BIP39_STRENGTH_BITS = 128;
 const TON_DERIVATION_PATH = [44, 607, 0];
@@ -222,7 +224,31 @@ export async function walletCandidateFromMnemonic(
   mnemonic: readonly string[],
   version: WalletVersion,
   addressFormat: AddressFormat,
+  mnemonicScheme: MnemonicScheme = mnemonic.length === 24 ? 'ton-24' : 'multichain-12',
 ): Promise<WalletCandidate> {
+  if (mnemonicScheme === 'ton-24') {
+    const normalizedMnemonic = mnemonic.map((word) => word.toLowerCase().trim());
+    if (normalizedMnemonic.length !== 24 || !(await mnemonicValidate(normalizedMnemonic))) {
+      normalizedMnemonic.fill('');
+      throw new Error('The TON 24-word mnemonic failed canonical validation.');
+    }
+
+    const keyPair = await mnemonicToPrivateKey(normalizedMnemonic);
+    try {
+      return {
+        address: walletAddressFromPublicKey(keyPair.publicKey, version, addressFormat),
+        mnemonic: [...mnemonic],
+      };
+    } finally {
+      normalizedMnemonic.fill('');
+      keyPair.publicKey.fill(0);
+      keyPair.secretKey.fill(0);
+    }
+  }
+
+  if (mnemonic.length !== 12) {
+    throw new Error('The multichain mnemonic must contain exactly 12 words.');
+  }
   const mnemonicText = mnemonic.join(' ');
   let rootSeed: Uint8Array | undefined;
 
@@ -289,8 +315,13 @@ export function walletAddressFromPublicKey(
 export async function generateWalletCandidate(
   version: WalletVersion,
   addressFormat: AddressFormat,
+  mnemonicScheme: MnemonicScheme = 'multichain-12',
 ): Promise<WalletCandidate> {
+  if (mnemonicScheme === 'ton-24') {
+    const mnemonic = await mnemonicNew(24);
+    return walletCandidateFromMnemonic(mnemonic, version, addressFormat, mnemonicScheme);
+  }
   const mnemonicText = generateMnemonic(wordlist, BIP39_STRENGTH_BITS);
   const mnemonic = mnemonicText.split(' ');
-  return walletCandidateFromMnemonic(mnemonic, version, addressFormat);
+  return walletCandidateFromMnemonic(mnemonic, version, addressFormat, mnemonicScheme);
 }
