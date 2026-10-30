@@ -50,7 +50,7 @@ export function matchesVanitySuffix(
 export function validateSearchOptions(
   options: SearchOptions,
 ): SuffixValidationResult {
-  if (options.version !== 'v4r2' && options.version !== 'w5') {
+  if (options.version !== 'v4r2' && options.version !== 'w5' && options.version !== 'tg') {
     return { valid: false, error: 'invalid-characters' };
   }
 
@@ -73,6 +73,12 @@ export function validateSearchOptions(
     options.mnemonicScheme !== 'multichain-12' &&
     options.mnemonicScheme !== 'ton-24'
   ) {
+    return { valid: false, error: 'invalid-characters' };
+  }
+
+  // Telegram imports the initial 12-word rotation mnemonic. A classic TON
+  // 24-word seed would derive an address the Telegram client cannot restore.
+  if (options.version === 'tg' && options.mnemonicScheme !== 'multichain-12') {
     return { valid: false, error: 'invalid-characters' };
   }
 

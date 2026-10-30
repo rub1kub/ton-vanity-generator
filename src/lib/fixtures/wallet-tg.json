@@ -1,0 +1,22 @@
+[
+  {
+    "bounceable": "EQD4d2pzr-W4jzh1wOd52HrsH7rRagzkSUPC3_jCgMxmK2IO",
+    "nonBounceable": "UQD4d2pzr-W4jzh1wOd52HrsH7rRagzkSUPC3_jCgMxmKz_L",
+    "publicKey": "7952e94118f34607c75e23258dd9220d66ccac5a3ee074125c25068e8107bfbf"
+  },
+  {
+    "bounceable": "EQDCjcR5_Q4diDlACSK1ITFKrUf1LBISaQVC_gG9yI0BOHpi",
+    "nonBounceable": "UQDCjcR5_Q4diDlACSK1ITFKrUf1LBISaQVC_gG9yI0BOCen",
+    "publicKey": "b15818c2ee759a300db662988f9b0b484e4135071075d67b478704030b2a1514"
+  },
+  {
+    "bounceable": "EQDExx_zQqBQBfQC_rsThRKRQiQ24v796IezPXEmTNT2F3Yz",
+    "nonBounceable": "UQDExx_zQqBQBfQC_rsThRKRQiQ24v796IezPXEmTNT2Fyv2",
+    "publicKey": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+    "bounceable": "EQDAjkYKBaLnn5Pi1bB7by7-WA2PkgPLSsGGeoJq7zixE4j-",
+    "nonBounceable": "UQDAjkYKBaLnn5Pi1bB7by7-WA2PkgPLSsGGeoJq7zixE9U7",
+    "publicKey": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+]

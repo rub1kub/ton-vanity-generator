@@ -1,4 +1,4 @@
-export type WalletVersion = 'v4r2' | 'w5';
+export type WalletVersion = 'v4r2' | 'w5' | 'tg';
 export type AddressFormat = 'non-bounceable' | 'bounceable';
 export type ComputeEngine = 'cpu' | 'gpu';
 export type SearchLocale = 'ru' | 'en';

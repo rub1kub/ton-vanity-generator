@@ -31,6 +31,9 @@ type CopyTarget = 'address' | 'seed' | null;
 
 const PRESETS = ['GRAM', 'MONEY', 'TON', 'DUCK'];
 const GPU_PIPELINE_STABILITY_CAP = 16;
+const WALLET_LABELS: Record<WalletVersion, string> = {
+  w5: 'W5', v4r2: 'v4R2', tg: 'tgWallet',
+};
 
 function maximumGpuPipelineCount(
   policy: ReturnType<typeof getBrowserConcurrencyPolicy>,
@@ -227,11 +230,11 @@ export function App() {
     const isEnglish = locale === 'en';
     document.documentElement.lang = locale;
     document.title = isEnglish
-      ? 'TON Vanity Address Generator — TonSuite'
-      : 'TON Vanity Generator — TonSuite';
+      ? 'TON Vanity Address Generator — tgWallet, W5 & v4R2 | TonSuite'
+      : 'Генератор TON-адресов: tgWallet, W5 и v4R2 | TonSuite';
     const description = isEnglish
-      ? 'Generate vanity TON Wallet v4R2 and W5 addresses locally. Address search and recovery phrases stay in your browser.'
-      : 'Локальный генератор красивых TON-адресов v4R2 и W5. Перебор и сид-фраза остаются только в вашем браузере.';
+      ? 'Generate vanity TON addresses for Telegram (tgWallet), W5 and v4R2 locally. Recovery phrases stay on your device.'
+      : 'Создайте красивый TON-адрес для Telegram (tgWallet), W5 или v4R2. Генерация выполняется на вашем устройстве, без отправки секретной фразы на сервер.';
     document.querySelector<HTMLMetaElement>('meta[name="description"]')?.setAttribute('content', description);
     document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.setAttribute(
       'href',
@@ -884,14 +887,21 @@ export function App() {
             <span className="setting-icon setting-icon--blue"><Sparkle weight="fill" /></span>
             <span><strong>{t('wallet.title')}</strong><small>{t('wallet.description')}</small></span>
           </div>
-          <div className="segmented" role="group" aria-label={t('wallet.group')}>
+          <div className="segmented segmented--wallet" role="group" aria-label={t('wallet.group')}>
             <button type="button" aria-pressed={version === 'w5'} disabled={calibrationRunning}
               className={version === 'w5' ? 'segmented__item is-active' : 'segmented__item'}
               onClick={() => { setVersion('w5'); setCalibrationResult(null); }}>W5 <span>{t('wallet.recommended')}</span></button>
             <button type="button" aria-pressed={version === 'v4r2'} disabled={calibrationRunning}
               className={version === 'v4r2' ? 'segmented__item is-active' : 'segmented__item'}
               onClick={() => { setVersion('v4r2'); setCalibrationResult(null); }}>v4R2 <span>{t('wallet.compatibility')}</span></button>
+            <button type="button" aria-pressed={version === 'tg'} disabled={calibrationRunning}
+              className={version === 'tg' ? 'segmented__item is-active' : 'segmented__item'}
+              onClick={() => {
+                setVersion('tg'); setMnemonicScheme('multichain-12');
+                setAddressFormat('non-bounceable'); setCalibrationResult(null);
+              }}>tgWallet <span>Telegram</span></button>
           </div>
+          {version === 'tg' && <p className="wallet-hint">{t('telegram.description')}</p>}
         </div>
 
         <details className="advanced-settings">
@@ -900,14 +910,14 @@ export function App() {
             <div className="advanced-group">
               <div className="setting-heading">
                 <span className="setting-icon setting-icon--violet"><LockKey weight="fill" /></span>
-                <span><strong>{t('mnemonic.title')}</strong><small>{t('mnemonic.description')}</small></span>
+                <span><strong>{t('mnemonic.title')}</strong><small>{t(version === 'tg' ? 'telegram.mnemonic' : 'mnemonic.description')}</small></span>
               </div>
               <div className="segmented" role="group" aria-label={t('mnemonic.title')}>
                 <button type="button" aria-pressed={mnemonicScheme === 'multichain-12'} disabled={calibrationRunning}
                   className={mnemonicScheme === 'multichain-12' ? 'segmented__item is-active' : 'segmented__item'}
                   onClick={() => { setMnemonicScheme('multichain-12'); setCalibrationResult(null); }}>
                   {t('mnemonic.12')} <span>{t('mnemonic.fast')}</span></button>
-                <button type="button" aria-pressed={mnemonicScheme === 'ton-24'} disabled={calibrationRunning}
+                <button type="button" aria-pressed={mnemonicScheme === 'ton-24'} disabled={calibrationRunning || version === 'tg'}
                   className={mnemonicScheme === 'ton-24' ? 'segmented__item is-active' : 'segmented__item'}
                   onClick={() => { setMnemonicScheme('ton-24'); setCalibrationResult(null); }}>
                   {t('mnemonic.24')} <span>TON</span></button>
@@ -993,11 +1003,12 @@ export function App() {
                   setAddressFormat('non-bounceable'); setCalibrationResult(null);
                 }} />
                   <span><strong>UQ…</strong><small>{t('format.nonBounceable')}</small></span></label>
-                <label><input type="radio" name="address-format" disabled={calibrationRunning} checked={addressFormat === 'bounceable'} onChange={() => {
+                <label><input type="radio" name="address-format" disabled={calibrationRunning || version === 'tg'} checked={addressFormat === 'bounceable'} onChange={() => {
                   setAddressFormat('bounceable'); setCalibrationResult(null);
                 }} />
                   <span><strong>EQ…</strong><small>{t('format.bounceable')}</small></span></label>
               </div>
+              {version === 'tg' && <p className="wallet-hint">{t('telegram.format')}</p>}
             </div>
           </div>
         </details>
@@ -1019,7 +1030,7 @@ export function App() {
     <>
       <ScreenSticker screen="searching" locale={locale} />
       <div className="hero-copy"><StatusPill locale={locale} /><h1 tabIndex={-1}>{t('search.title')}</h1>
-        <p>{t('search.description', { suffix: cleanSuffix, version: version === 'w5' ? 'W5' : 'v4R2', engine: engineLabel })}</p></div>
+        <p>{t('search.description', { suffix: cleanSuffix, version: WALLET_LABELS[version], engine: engineLabel })}</p></div>
       {engineNotice && <div className="notice-banner" role="status">{engineNotice}</div>}
       <section className={isPaused ? 'panel progress-panel is-paused' : 'panel progress-panel'}>
         <div className="pulse-orbit" aria-hidden="true"><span /></div>
@@ -1089,7 +1100,7 @@ export function App() {
       <div className="hero-copy"><span className="success-pill"><CheckCircle weight="fill" /> {t('found.status')}</span>
         <h1 tabIndex={-1}>{t('found.title')}</h1><p>{t('found.description')}</p></div>
       <section className="panel found-panel">
-        <div className="wallet-meta"><span>TON {foundCandidate.version === 'w5' ? 'W5' : 'v4R2'}</span>
+        <div className="wallet-meta"><span>TON {WALLET_LABELS[foundCandidate.version]}</span>
           <span>{foundCandidate.addressFormat === 'bounceable' ? 'Bounceable' : 'Non-bounceable'}</span></div>
         <div className="found-address"><HighlightedAddress address={foundCandidate.address} suffix={cleanSuffix} />
           <button type="button" className="icon-button" aria-label={t('found.copyAddress')}
@@ -1098,6 +1109,7 @@ export function App() {
         <div className="found-stats"><span><small>{t('found.attempts')}</small><strong>{compactNumber(foundCandidate.attempts, locale)}</strong></span>
           <span><small>{t('found.time')}</small><strong>{formatDuration(foundCandidate.elapsedMs)}</strong></span></div>
       </section>
+      {foundCandidate.version === 'tg' && <p className="wallet-hint">{t('telegram.description')}</p>}
       <div className="warning-card"><ShieldCheck weight="fill" />
         <span><strong>{t('found.hiddenTitle')}</strong><small>{t('found.hiddenDescription')}</small></span></div>
       <button type="button" className="primary-button" onClick={() => { setSafeToReveal(false); setScreen('seed-ready'); }}>
@@ -1148,7 +1160,8 @@ export function App() {
         ) : <div className="seed-hidden-state"><EyeSlash weight="fill" />{t('seed.hidden', {
           count: foundWallet.mnemonicScheme === 'ton-24' ? 24 : 12,
         })}</div>}
-        <div className="seed-standard"><span>{foundWallet.mnemonicScheme === 'ton-24'
+        <div className="seed-standard"><span>{foundWallet.version === 'tg'
+          ? 'WalletTg · TEP-3' : foundWallet.mnemonicScheme === 'ton-24'
           ? 'TON Mnemonic' : 'BIP39 · SLIP-0010'}</span><code>{foundWallet.mnemonicScheme === 'ton-24'
           ? 'TON default seed' : "m/44'/607'/0'"}</code></div>
         <button type="button" className="copy-seed-button" disabled={!seedVisible}
@@ -1158,6 +1171,15 @@ export function App() {
             count: foundWallet.mnemonicScheme === 'ton-24' ? 24 : 12,
           })}</button>
       </section>
+      {foundWallet.version === 'tg' && <section className="panel telegram-guide" aria-labelledby="telegram-guide-title">
+        <h2 id="telegram-guide-title"><TelegramLogo weight="fill" />{t('telegram.guideTitle')}</h2>
+        <ol>
+          <li>{t('telegram.import')}</li>
+          <li>{t('telegram.rotate')}</li>
+          <li>{t('telegram.save')}</li>
+        </ol>
+        <p>{t('telegram.availability')}</p>
+      </section>}
       <button type="button" className="primary-button" onClick={reset}>{t('seed.restart')}</button>
       <p className="privacy-note"><LockKey weight="fill" /> {t('seed.notStored')}</p>
     </>

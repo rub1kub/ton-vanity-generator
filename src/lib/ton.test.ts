@@ -12,7 +12,9 @@ import {
   walletAddressFromPublicKey,
   walletAddressFromRootSeed,
   walletAddressFromTonSeed,
+  walletCandidateFromMnemonic,
 } from './ton';
+import telegramVectors from './fixtures/wallet-tg.json';
 
 type TestPublicKey = Parameters<typeof walletAddressFromPublicKey>[0];
 
@@ -59,11 +61,11 @@ describe('deriveTonPathSeed', () => {
 });
 
 describe('walletAddressFromTonSeed', () => {
-  it('is identical to the root-seed path for both wallet contracts', () => {
+  it('is identical to the root-seed path for all wallet contracts', () => {
     for (let sample = 0; sample < 24; sample += 1) {
       const rootSeed = crypto.getRandomValues(new Uint8Array(64));
       const tonSeed = deriveTonPathSeed(rootSeed);
-      for (const version of ['v4r2', 'w5'] as const) {
+      for (const version of ['v4r2', 'w5', 'tg'] as const) {
         expect(walletAddressFromTonSeed(
           tonSeed,
           version,
@@ -105,6 +107,17 @@ describe('publicKeyFromSeed', () => {
 });
 
 describe('walletAddressFromPublicKey', () => {
+  // Produced independently by i582/wallet-engine at
+  // e59e0d89d7ee90c388bf36e3334c5b276f396697 via TonWallet::new(Wallet).
+  // Pins trampoline code, rev00 layout, mainnet subwallet ID, and CRC16 flags.
+  it.each(telegramVectors)('matches Telegram Rust address for $publicKey', (vector) => {
+    const publicKey = Buffer.from(vector.publicKey, 'hex');
+    expect(walletAddressFromPublicKey(publicKey, 'tg', 'non-bounceable'))
+      .toBe(vector.nonBounceable);
+    expect(walletAddressFromPublicKey(publicKey, 'tg', 'bounceable'))
+      .toBe(vector.bounceable);
+  });
+
   it('derives the standard Wallet V4R2 mainnet address', () => {
     expect(
       walletAddressFromPublicKey(
@@ -178,7 +191,44 @@ describe('walletAddressFromPublicKey', () => {
   });
 });
 
+describe('WalletTg Telegram import', () => {
+  // Public BIP39 test vectors, never use these phrases for a funded wallet.
+  const phrases = [
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    'notice tortoise soup strong gun divide offer process salon siren general carry',
+  ];
+
+  it.each([0, 1])('restores the same address as Telegram wallet-engine (vector %i)', async (index) => {
+    const candidate = await walletCandidateFromMnemonic(
+      phrases[index]!.split(' '), 'tg', 'non-bounceable',
+    );
+    expect(candidate.address).toBe(telegramVectors[index]!.nonBounceable);
+    expect(candidate.mnemonic).toHaveLength(12);
+  });
+
+  it('rejects the incompatible classic TON mnemonic mode before generation', async () => {
+    await expect(generateWalletCandidate('tg', 'non-bounceable', 'ton-24'))
+      .rejects.toThrow('12-word BIP39 rotation mnemonic');
+    await expect(walletCandidateFromMnemonic(
+      Array(24).fill('abandon'), 'tg', 'non-bounceable', 'ton-24',
+    )).rejects.toThrow('12-word BIP39 rotation mnemonic');
+  });
+
+  it('rejects a twelve-word phrase with an invalid BIP39 checksum', async () => {
+    await expect(walletCandidateFromMnemonic(
+      Array(12).fill('abandon'), 'tg', 'non-bounceable',
+    )).rejects.toThrow('BIP39 validation');
+  });
+});
+
 describe('generateWalletCandidate', () => {
+  it('creates a Telegram-compatible twelve-word WalletTg candidate', async () => {
+    const candidate = await generateWalletCandidate('tg', 'non-bounceable');
+    expect(candidate.mnemonic).toHaveLength(12);
+    expect(validateMnemonic(candidate.mnemonic.join(' '), wordlist)).toBe(true);
+    expect(candidate.address).toMatch(/^UQ[A-Za-z0-9_-]{46}$/);
+  });
+
   it('creates an importable 12-word TEP-3 BIP39 candidate', async () => {
     const candidate = await generateWalletCandidate('w5', 'non-bounceable');
 

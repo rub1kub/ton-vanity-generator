@@ -1,15 +1,17 @@
 # TonSuite TON Vanity Generator
 
-A privacy-first vanity address generator for TON Wallet W5 and v4R2. It runs
+A privacy-first vanity address generator for Telegram WalletTg, W5 and v4R2. It runs
 entirely in the browser at [`tonsuite.org/generator/`](https://tonsuite.org/generator/).
 
 ## What it does
 
 - Searches for a user-chosen ending in a URL-safe TON friendly address.
-- Supports mainnet W5 v5r1 and Wallet v4R2.
+- Supports mainnet Telegram WalletTg (rev00), W5 v5r1 and Wallet v4R2.
 - Supports non-bounceable `UQ…` and bounceable `EQ…` display formats.
 - Lets the user choose the recommended 12-word TEP-3 Multichain format
   (`m/44'/607'/0'`) or the classic 24-word TON mnemonic format.
+- WalletTg uses only the initial 12-word BIP39 rotation format. The UI selects
+  the non-bounceable `UQ…` format used by Telegram so its displayed ending matches.
 - Runs work in multiple dedicated Web Workers.
 - Can pause, resume and change CPU/GPU power without losing the attempt count.
 - Offers one compact, local auto-tune control that benchmarks the full pipeline
@@ -66,7 +68,7 @@ Static output is written to `dist/`.
   derivation. Both paths use known-answer tests.
 - The ordinary `libsodium-wrappers` WASM build accelerates Ed25519 public-key
   derivation, with an RFC 8032 self-test and automatic noble fallback.
-- Canonical W5/v4R2 contract code is cached once; only the small data Cell and
+- Canonical WalletTg/W5/v4R2 contract code is cached once; only the small data Cell and
   StateInit address are built for each candidate.
 - Every winning GPU candidate is independently re-derived from its mnemonic on
   the CPU before the address or recovery phrase is accepted. CPU winners are
@@ -75,6 +77,32 @@ Static output is written to `dist/`.
 - Found-wallet notifications contain no address, mnemonic or other secret.
 - Telegram TGS animations are self-hosted and rendered with the light Lottie
   player; no Telegram or FStik request is made at runtime.
+
+## Telegram WalletTg
+
+Select **tgWallet · Telegram**, search, then save the 12-word phrase. Import it
+into Telegram's native **Money** wallet or another app that supports WalletTg
+and the TEP-3 rotation mnemonic. Verify the same address before funding it.
+This is the native WalletTg contract, not a generic import into any Wallet mini app.
+
+Addresses use the immutable trampoline from
+[`ton-blockchain/tg-wallet-contract`](https://github.com/ton-blockchain/tg-wallet-contract/tree/1a29ae5d90e03c3d585d3e42e6ecef691d727a3c),
+code hash `9149ae51c1e4689710cebf7830297b16acfbadb363a920a537893e7ffeeca768`,
+and rev00 data: `revision:uint8=0`, `seqno:uint32=0`,
+`subwalletId:uint32=0x7FFF7F11`, `anchorPublicKey:bits256`, on workchain 0.
+The address fixtures in `src/lib/fixtures/wallet-tg.json` were independently
+produced with `i582/wallet-engine` commit `e59e0d89d7ee90c388bf36e3334c5b276f396697`.
+
+WalletTg can rotate its signing key on-chain without changing its address or
+vanity ending. After the first successful rotation, the current phrase has 24
+words: the original 12-word anchor and an independent 12-word signing half.
+Only the signing half changes on later rotations; old phrases no longer sign.
+The generator creates initial wallets and does not submit rotation transactions.
+Telegram currently ties its phrase-update UI to disabling cloud backup; that
+flow may be unavailable for imported wallets. Rotation therefore requires a
+compatible wallet app that exposes it. See the
+[Telegram wallet guide](https://docs.ton.org/onboarding/wallet-apps/telegram) and
+[WalletTg integration specification](https://docs.ton.org/contracts/standard/wallets/telegram/integrate).
 
 ## Open-source and assets
 

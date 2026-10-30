@@ -52,6 +52,16 @@ describe('matchesVanitySuffix', () => {
 });
 
 describe('validateSearchOptions', () => {
+  it.each(['cpu', 'gpu'] as const)('allows WalletTg on %s only with twelve words', (engine) => {
+    const options = {
+      suffix: 'GRAM', version: 'tg' as const,
+      addressFormat: 'non-bounceable' as const, caseSensitive: false,
+      engine, locale: 'ru' as const, mnemonicScheme: 'multichain-12' as const,
+    };
+    expect(validateSearchOptions(options)).toEqual({ valid: true, suffix: 'GRAM' });
+    expect(validateSearchOptions({ ...options, mnemonicScheme: 'ton-24' }).valid).toBe(false);
+  });
+
   it('returns the normalized suffix for valid options', () => {
     expect(
       validateSearchOptions({

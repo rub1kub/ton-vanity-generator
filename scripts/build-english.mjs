@@ -31,18 +31,18 @@ let englishHtml = russianHtml;
 for (const [source, replacement, label] of [
   ['<html lang="ru">', '<html lang="en">', 'Document language'],
   [
-    'content="Локальный генератор красивых TON-адресов v4R2 и W5. Перебор и сид-фраза остаются только в вашем браузере."',
-    'content="Generate vanity TON Wallet v4R2 and W5 addresses locally. Address search and recovery phrases stay in your browser."',
+    'content="Создайте красивый TON-адрес для Telegram (tgWallet), W5 или v4R2. Генерация выполняется на вашем устройстве, без отправки секретной фразы на сервер."',
+    'content="Generate vanity TON addresses for Telegram (tgWallet), W5 and v4R2 locally. Recovery phrases stay on your device."',
     'Meta description',
   ],
   [
-    '<meta property="og:title" content="TON Vanity Generator — TonSuite" />',
-    '<meta property="og:title" content="TON Vanity Address Generator — TonSuite" />',
+    '<meta property="og:title" content="Генератор TON-адресов: tgWallet, W5 и v4R2 | TonSuite" />',
+    '<meta property="og:title" content="TON Vanity Address Generator — tgWallet, W5 &amp; v4R2 | TonSuite" />',
     'Open Graph title',
   ],
   [
-    'content="Охотьтесь за красивым окончанием TON-адреса прямо на своём устройстве."',
-    'content="Hunt for a custom TON address ending locally on your own device."',
+    '<meta\n      property="og:description"\n      content="Подберите окончание TON-адреса локально в браузере. Поддерживаются tgWallet (Telegram), W5 и v4R2."\n    />',
+    '<meta property="og:description" content="Find a custom TON address ending locally for Telegram (tgWallet), W5 or v4R2." />',
     'Open Graph description',
   ],
   [
@@ -66,13 +66,47 @@ for (const [source, replacement, label] of [
     'Apple touch icon',
   ],
   [
-    '<title>TON Vanity Generator — TonSuite</title>',
-    '<title>TON Vanity Address Generator — TonSuite</title>',
+    '<title>Генератор TON-адресов: tgWallet, W5 и v4R2 | TonSuite</title>',
+    '<title>TON Vanity Address Generator — tgWallet, W5 &amp; v4R2 | TonSuite</title>',
     'Document title',
+  ],
+  [
+    '<meta property="og:locale" content="ru_RU" />',
+    '<meta property="og:locale" content="en_US" />',
+    'Open Graph locale',
+  ],
+  [
+    '<meta name="twitter:title" content="Генератор TON-адресов: tgWallet, W5 и v4R2 | TonSuite" />',
+    '<meta name="twitter:title" content="TON Vanity Address Generator — tgWallet, W5 &amp; v4R2 | TonSuite" />',
+    'Twitter title',
+  ],
+  [
+    '<meta name="twitter:description" content="Подберите окончание TON-адреса локально в браузере. Поддерживаются tgWallet (Telegram), W5 и v4R2." />',
+    '<meta name="twitter:description" content="Find a custom TON address ending locally for Telegram (tgWallet), W5 or v4R2." />',
+    'Twitter description',
+  ],
+  [
+    '<meta property="og:image:alt" content="Генератор красивых TON-адресов TonSuite" />',
+    '<meta property="og:image:alt" content="TonSuite vanity TON address generator" />',
+    'Open Graph image description',
+  ],
+  [
+    '<meta name="twitter:image:alt" content="Генератор красивых TON-адресов TonSuite" />',
+    '<meta name="twitter:image:alt" content="TonSuite vanity TON address generator" />',
+    'Twitter image description',
   ],
 ]) {
   englishHtml = replaceExactlyOnce(englishHtml, source, replacement, label);
 }
+
+englishHtml = englishHtml.replace(/<script type="application\/ld\+json">(.*?)<\/script>/, (_, json) => {
+  const data = JSON.parse(json);
+  data.name = 'TON Vanity Address Generator';
+  data.url = 'https://tonsuite.org/en/generator/';
+  data.description = 'Local vanity TON address generator for Telegram (tgWallet), W5 and v4R2.';
+  data.publisher.url = 'https://tonsuite.org/en/';
+  return `<script type="application/ld+json">${JSON.stringify(data)}</script>`;
+});
 
 for (const assetReference of sharedAssetReferences) {
   if (!englishHtml.includes(assetReference)) {
