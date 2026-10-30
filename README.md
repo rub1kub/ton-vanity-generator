@@ -10,7 +10,7 @@ entirely in the browser at [`tonsuite.org/generator/`](https://tonsuite.org/gene
 - Supports non-bounceable `UQ…` and bounceable `EQ…` display formats.
 - Lets the user choose the recommended 12-word TEP-3 Multichain format
   (`m/44'/607'/0'`) or the classic 24-word TON mnemonic format.
-- WalletTg uses only the initial 12-word BIP39 rotation format. The UI selects
+- WalletTg generation uses the initial 12-word BIP39 rotation format. The UI selects
   the non-bounceable `UQ…` format used by Telegram so its displayed ending matches.
 - Runs work in multiple dedicated Web Workers.
 - Can pause, resume and change CPU/GPU power without losing the attempt count.
@@ -21,7 +21,9 @@ entirely in the browser at [`tonsuite.org/generator/`](https://tonsuite.org/gene
 - Detects mobile browsers, hides WebGPU there, and exposes every safe CPU count
   up to the browser-reported ceiling (8 on mobile, 32 on desktop).
 - Keeps generation, candidate keys and recovery words on the user's device.
-- Makes no analytics or wallet API requests.
+- Makes no analytics requests; vanity generation needs no wallet API.
+- Rotates WalletTg signing keys on-chain while retaining the vanity address,
+  even when Telegram does not expose a phrase-update button.
 - Plays a local Web Audio chime and, when the user grants browser permission,
   shows a system notification after a matching wallet is found.
 
@@ -97,10 +99,28 @@ WalletTg can rotate its signing key on-chain without changing its address or
 vanity ending. After the first successful rotation, the current phrase has 24
 words: the original 12-word anchor and an independent 12-word signing half.
 Only the signing half changes on later rotations; old phrases no longer sign.
-The generator creates initial wallets and does not submit rotation transactions.
-Telegram currently ties its phrase-update UI to disabling cloud backup; that
-flow may be unavailable for imported wallets. Rotation therefore requires a
-compatible wallet app that exposes it. See the
+Open **Change a tgWallet recovery phrase** (or `/generator/#rotate`) to submit a
+key change directly. Enter the original address and current 12/24-word phrase,
+save the new 24-word phrase, and answer the backup check before signing.
+The wallet needs TON for fees; a prefunded undeployed wallet can be deployed and
+rotated together. Fees are estimated before approval and checked again before
+signing. The displayed tolerance is not an on-chain maximum fee.
+
+Keep both phrases until the on-chain key confirms success. Network errors do not
+prove failure. Only public pending metadata is saved for checking after reload;
+words and private keys are never persisted or sent to the RPC. Import the new
+24 words into Telegram and update any old backup/connection afterwards.
+
+The production proxy exposes only `getAddressInformation`, `getConfigParam`,
+`estimateFee` and `sendBoc`. Templates are in `ops/`; the TON Center key belongs in
+the root-readable server include, never JavaScript or a `VITE_*` variable.
+Local `npm run dev` / `preview` proxies to the public endpoint without a key.
+Self-hosted static copies retain generation; online rotation needs the RPC proxy.
+
+Run focused tests with `npx vitest run src/lib/tg-rotation*.test.ts` and contract
+interoperability tests with `npm run test:rotation-contract` (Acton 1.2.0; optional
+`ACTON_BIN=/path/to/acton`). These emulate actual TypeScript-produced BOCs against
+pinned WalletTg bytecode; they never use real funds. See [SECURITY.md](SECURITY.md), the
 [Telegram wallet guide](https://docs.ton.org/onboarding/wallet-apps/telegram) and
 [WalletTg integration specification](https://docs.ton.org/contracts/standard/wallets/telegram/integrate).
 

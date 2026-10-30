@@ -1,0 +1,17 @@
+[package]
+name = "TonSuiteRotationInterop"
+description = "Interop checks for browser-produced WalletTg key-rotation messages"
+version = "1.0.0"
+license = "MIT"
+
+[toolchain]
+acton = "1.2.0"
+
+[contracts.Trampoline]
+src = "fixtures/code.boc"
+
+[contracts.Implementation]
+src = "contracts/WalletTg-rev00.boc"
+
+[import-mappings]
+acton = ".acton"

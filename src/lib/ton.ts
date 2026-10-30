@@ -12,6 +12,7 @@ import {
 import { Buffer } from 'buffer';
 
 import type { AddressFormat, MnemonicScheme, WalletVersion } from '../types';
+import { telegramWalletCode, telegramWalletData } from './wallet-tg-code';
 
 const BIP39_STRENGTH_BITS = 128;
 const TON_DERIVATION_PATH = [44, 607, 0];
@@ -23,21 +24,6 @@ const V4_DEFAULT_WALLET_ID = 698_983_191;
 // Default W5R1 client context: mainnet (-239), workchain 0, version 0,
 // subwallet 0. This is the canonical serialized value from @ton/ton.
 const W5_DEFAULT_WALLET_ID = 2_147_483_409;
-// WalletTg rev00, mainnet, workchain 0. This is NOT the W5 wallet ID.
-const TG_DEFAULT_WALLET_ID = 0x7fff7f11;
-// Immutable on-account trampoline from ton-blockchain/tg-wallet-contract
-// commit 1a29ae5d90e03c3d585d3e42e6ecef691d727a3c. The shared implementation
-// in config -123 must never be substituted for this address-defining code.
-const TG_TRAMPOLINE_BOC = 'b5ee9c7241010101001a000030ff00209821d7498308b9f240df8085f833d0ed1e20ed53d969427e39';
-
-function getTelegramWalletCode(): Cell {
-  const [code] = Cell.fromBoc(Buffer.from(TG_TRAMPOLINE_BOC, 'hex'));
-  if (code?.hash().toString('hex') !== '9149ae51c1e4689710cebf7830297b16acfbadb363a920a537893e7ffeeca768') {
-    throw new Error('The WalletTg trampoline failed canonical verification.');
-  }
-  return code;
-}
-
 function getCanonicalWalletCode(version: Exclude<WalletVersion, 'tg'>): Cell {
   const placeholderPublicKey = Buffer.alloc(32);
   const wallet = version === 'v4r2'
@@ -67,7 +53,7 @@ function getCanonicalWalletCode(version: Exclude<WalletVersion, 'tg'>): Cell {
 const WALLET_CODE: Record<WalletVersion, Cell> = {
   v4r2: getCanonicalWalletCode('v4r2'),
   w5: getCanonicalWalletCode('w5'),
-  tg: getTelegramWalletCode(),
+  tg: telegramWalletCode(),
 };
 
 type TonKeyPair = ReturnType<typeof keyPairFromSeed>;
@@ -302,12 +288,7 @@ export function walletAddressFromPublicKey(
   }
 
   const data = version === 'tg'
-    ? beginCell()
-        .storeUint(0, 8) // initial revision
-        .storeUint(0, 32) // seqno
-        .storeUint(TG_DEFAULT_WALLET_ID, 32)
-        .storeBuffer(publicKey, 32)
-        .endCell()
+    ? telegramWalletData(publicKey)
     : version === 'v4r2'
     ? beginCell()
         .storeUint(0, 32)

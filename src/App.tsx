@@ -3,7 +3,7 @@ import {
   Globe, GraphicsCard, Info, LockKey, MagicWand, Pause, Play, ShieldCheck,
   SlidersHorizontal, Sparkle, Stop, TelegramLogo, X,
 } from '@phosphor-icons/react';
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { TgsSticker, type StickerName } from './components/TgsSticker';
 import {
   alternateLocale, detectLocale, generatorHref, homeHref, translate,
@@ -28,6 +28,7 @@ import type {
 
 type Screen = 'setup' | 'searching' | 'found' | 'seed-ready' | 'seed';
 type CopyTarget = 'address' | 'seed' | null;
+const TelegramRotation = lazy(() => import('./components/TelegramRotation').then((module) => ({ default: module.TelegramRotation })));
 
 const PRESETS = ['GRAM', 'MONEY', 'TON', 'DUCK'];
 const GPU_PIPELINE_STABILITY_CAP = 16;
@@ -123,6 +124,15 @@ export function App() {
   const concurrencyPolicy = useMemo(() => getBrowserConcurrencyPolicy(), []);
   const [deviceProfile, setDeviceProfile] = useState<DeviceProfile | null>(null);
   const [screen, setScreen] = useState<Screen>('setup');
+  const [rotationOpen, setRotationOpen] = useState(() => {
+    try { return location.hash === '#rotate' || !!localStorage.getItem('tonsuite:tg-rotation:pending:v1'); }
+    catch { return location.hash === '#rotate'; }
+  });
+  const [rotationAddress, setRotationAddress] = useState('');
+  const openRotation = (address = '') => {
+    setRotationAddress(address); setSeedVisible(false); setRotationOpen(true);
+    window.history.replaceState(null, '', `${location.pathname}#rotate`);
+  };
   const [suffix, setSuffix] = useState('GRAM');
   const [version, setVersion] = useState<WalletVersion>('w5');
   const [mnemonicScheme, setMnemonicScheme] = useState<MnemonicScheme>('multichain-12');
@@ -799,7 +809,7 @@ export function App() {
   const switchLocale = (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
     const nextLocale = alternateLocale(locale);
-    window.history.pushState(null, '', generatorHref(nextLocale));
+    window.history.pushState(null, '', `${generatorHref(nextLocale)}${rotationOpen ? '#rotate' : ''}`);
     setLocale(nextLocale);
   };
   const copyText = async (text: string, target: Exclude<CopyTarget, null>) => {
@@ -1179,6 +1189,8 @@ export function App() {
           <li>{t('telegram.save')}</li>
         </ol>
         <p>{t('telegram.availability')}</p>
+        <button type="button" className="secondary-button" onClick={() => openRotation(foundWallet.address)}>
+          <LockKey />{locale === 'ru' ? 'Сменить фразу этого адреса' : 'Change this address’s phrase'}</button>
       </section>}
       <button type="button" className="primary-button" onClick={reset}>{t('seed.restart')}</button>
       <p className="privacy-note"><LockKey weight="fill" /> {t('seed.notStored')}</p>
@@ -1191,7 +1203,7 @@ export function App() {
       <div className="ambient ambient--one" /><div className="ambient ambient--two" />
       <header className="topbar">
         <div className="topbar__leading">
-          {screen !== 'setup' && screen !== 'seed' && <button type="button" className="back-button"
+          {!rotationOpen && screen !== 'setup' && screen !== 'seed' && <button type="button" className="back-button"
             onClick={goBack} aria-label={t('nav.back')}><ArrowLeft weight="bold" /></button>}
           <TonSuiteMark locale={locale} />
         </div>
@@ -1204,9 +1216,18 @@ export function App() {
       </header>
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{liveMessage}</div>
       {error && screen !== 'setup' && <div className="global-error error-banner" role="alert">{error}</div>}
-      <main id="generator-main" className={`generator generator--${screen}`}>
-        {screen === 'setup' && setupScreen}{screen === 'searching' && searchingScreen}
-        {screen === 'found' && foundScreen}{screen === 'seed-ready' && seedReadyScreen}{screen === 'seed' && seedScreen}
+      <main id="generator-main" className={`generator generator--${rotationOpen ? 'rotation' : screen}`}>
+        {rotationOpen ? <Suspense fallback={<p role="status">{locale === 'ru' ? 'Загружаем…' : 'Loading…'}</p>}>
+          <TelegramRotation locale={locale} initialAddress={rotationAddress} onClose={(completed) => {
+            setRotationOpen(false); setRotationAddress('');
+            window.history.replaceState(null, '', location.pathname);
+            if (completed) reset();
+          }} /></Suspense> : <>
+          {screen === 'setup' && setupScreen}{screen === 'searching' && searchingScreen}
+          {screen === 'found' && foundScreen}{screen === 'seed-ready' && seedReadyScreen}{screen === 'seed' && seedScreen}
+          {screen === 'setup' && <button type="button" className="text-button rotation-mode-link" disabled={calibrationRunning}
+            onClick={() => openRotation()}><LockKey />{locale === 'ru' ? 'Сменить сид-фразу tgWallet →' : 'Change a tgWallet recovery phrase →'}</button>}
+        </>}
       </main>
       {huntStartedOpen && <div className="hunt-modal-backdrop" onMouseDown={(event) => {
         if (event.target === event.currentTarget) setHuntStartedOpen(false);

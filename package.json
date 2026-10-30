@@ -3,7 +3,7 @@
   "private": false,
   "version": "1.0.0",
   "type": "module",
-  "description": "A privacy-first, browser-only vanity address generator for TON Wallet v4R2 and W5.",
+  "description": "Local TON vanity address generation for v4R2, W5 and Telegram WalletTg, with on-chain WalletTg key rotation.",
   "license": "MIT",
   "homepage": "https://tonsuite.org/generator/",
   "repository": {
@@ -20,6 +20,7 @@
     "typecheck": "tsc -b --pretty false",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:rotation-contract": "node scripts/test-rotation-contract.mjs",
     "check": "npm run typecheck && npm run test:run && npm run build"
   },
   "dependencies": {
@@ -37,6 +38,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "@types/pako": "^2.0.4",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

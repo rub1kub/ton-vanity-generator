@@ -9,3 +9,8 @@ dist/
 .vscode/
 coverage/
 .server/
+tests/rotation-contract/.acton/
+tests/rotation-contract/build/
+tests/rotation-contract/gen/
+tests/rotation-contract/wrappers/
+tests/rotation-contract/fixtures/

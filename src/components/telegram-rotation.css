@@ -1,0 +1,36 @@
+.rotation-flow { width: min(100%, 680px); margin: 0 auto; display: grid; gap: 20px; }
+.rotation-heading { text-align: center; padding: 6px 12px 10px; }
+.rotation-heading h1 { font-size: clamp(28px, 5vw, 42px); margin: 18px 0 12px; line-height: 1.12; letter-spacing: -.035em; }
+.rotation-heading p, .rotation-card p { color: var(--secondary); line-height: 1.55; margin: 0; }
+.rotation-card { display: flex; flex-direction: column; gap: 18px; padding: 28px; }
+.rotation-card h2 { display: flex; gap: 10px; align-items: center; font-size: 21px; margin: 0; letter-spacing: -.02em; }
+.rotation-card label { display: grid; gap: 9px; font-weight: 700; }
+.rotation-card input:not([type=checkbox]), .rotation-card textarea { width: 100%; min-width: 0; background: #121214; border: 1px solid var(--separator); color: var(--text); border-radius: 12px; padding: 13px 15px; font: inherit; outline-offset: 3px; }
+.rotation-card textarea { resize: vertical; font-family: ui-monospace, monospace; }
+.rotation-card button { width: 100%; gap: 8px; }
+.rotation-card button:disabled { opacity: .45; cursor: not-allowed; }
+.rotation-label { color: var(--secondary); font-size: 14px; }
+.rotation-address { display: block; overflow-wrap: anywhere; font-size: 16px; line-height: 1.65; font-family: ui-monospace, monospace; }
+.rotation-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.rotation-facts span { display: grid; gap: 7px; color: var(--secondary); font-size: 14px; }
+.rotation-facts b { color: var(--text); font-size: 17px; overflow-wrap: anywhere; }
+.rotation-card .rotation-note { font-size: 13px; color: var(--muted); }
+.rotation-note svg { vertical-align: -.15em; margin-right: 6px; }
+.rotation-card .rotation-notice { padding: 14px 16px; background: rgba(70, 156, 236, .08); border-radius: 12px; font-size: 14px; }
+.rotation-words { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.rotation-words li { display: flex; gap: 8px; padding: 10px; border-radius: 8px; background: #121214; font-family: ui-monospace, monospace; font-size: 14px; }
+.rotation-words li:nth-child(n+13) { background: rgba(70, 156, 236, .13); }
+.rotation-words li span { color: var(--muted); min-width: 18px; font-size: 12px; }
+.rotation-card .rotation-checkbox { display: flex; align-items: flex-start; font-size: 14px; line-height: 1.5; cursor: pointer; }
+.rotation-checkbox input { width: 20px; height: 20px; flex-shrink: 0; margin: 1px 0 0; accent-color: var(--accent); }
+.rotation-quiz { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; font-size: 14px; }
+.rotation-card details { color: var(--secondary); font-size: 13px; }
+.rotation-card summary { cursor: pointer; padding: 8px 0; }
+.rotation-mode-link { margin: 0 auto; display: flex; gap: 8px; align-items: center; color: var(--accent); }
+@media (max-width: 480px) {
+  .rotation-card { padding: 20px 16px; }
+  .rotation-words { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rotation-quiz { gap: 8px; }
+  .rotation-quiz input { padding: 12px 8px !important; }
+  .rotation-facts { grid-template-columns: 1fr; }
+}

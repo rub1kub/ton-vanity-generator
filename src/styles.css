@@ -39,6 +39,9 @@
 
 * { box-sizing: border-box; }
 
+.generator.generator--rotation { width: min(calc(100% - 32px), 680px); }
+.rotation-mode-link { grid-column: 2; grid-row: 5; margin: 8px auto 0; color: var(--accent); }
+
 html { min-width: 320px; background: #000; scrollbar-gutter: stable; }
 
 body {
