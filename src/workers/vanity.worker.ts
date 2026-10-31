@@ -13,7 +13,7 @@ import {
   generateTonMnemonic24Batch,
   tonMnemonicEntropy,
 } from '../lib/ton-mnemonic';
-import { matchesVanitySuffix, validateSearchOptions } from '../lib/search';
+import { createVanitySuffixMatcher, normalizeVanitySuffixes, validateSearchOptions } from '../lib/search';
 import type {
   FoundCandidate, FoundWallet, SearchOptions, SearchProgress,
   WorkerRequest, WorkerResponse,
@@ -51,6 +51,8 @@ interface RunState {
   attempts: number;
   sampleAddress: string;
 }
+
+type SuffixMatcher = ReturnType<typeof createVanitySuffixMatcher>;
 
 const copy = {
   ru: {
@@ -153,7 +155,7 @@ async function runCpuSearch(
   runId: number,
   workerId: number,
   options: SearchOptions,
-  suffix: string,
+  matchSuffix: SuffixMatcher,
   state: RunState,
 ): Promise<void> {
   const [ton, cpuEd25519] = await Promise.all([tonRuntime, cpuEd25519Runtime]);
@@ -209,7 +211,7 @@ async function runCpuSearch(
 
       state.attempts += 1;
       state.sampleAddress = address;
-      if (matchesVanitySuffix(address, suffix, options.caseSensitive)) {
+      if (matchSuffix(address)) {
         // libsodium is self-tested at startup, and a rare winning phrase is
         // additionally re-derived through the canonical noble/TON path before
         // anything is exposed to the user.
@@ -253,7 +255,7 @@ async function runTonMnemonicCpuSearch(
   runId: number,
   workerId: number,
   options: SearchOptions,
-  suffix: string,
+  matchSuffix: SuffixMatcher,
   state: RunState,
 ): Promise<void> {
   const [ton, cpuEd25519] = await Promise.all([tonRuntime, cpuEd25519Runtime]);
@@ -313,7 +315,7 @@ async function runTonMnemonicCpuSearch(
 
     state.attempts += 1;
     state.sampleAddress = address;
-    if (matchesVanitySuffix(address, suffix, options.caseSensitive)) {
+    if (matchSuffix(address)) {
       const verified = await ton.walletCandidateFromMnemonic(
         mnemonic,
         options.version,
@@ -344,7 +346,7 @@ async function runGpuSearch(
   runId: number,
   workerId: number,
   options: SearchOptions,
-  suffix: string,
+  matchSuffix: SuffixMatcher,
   state: RunState,
 ): Promise<void> {
   const [{ WebGpuPbkdf2Accelerator }, ton, cpuEd25519] = await Promise.all([
@@ -426,11 +428,7 @@ async function runGpuSearch(
             if (!item.ok) continue;
             state.attempts += 1;
             state.sampleAddress = item.address;
-            if (!winner && matchesVanitySuffix(
-              item.address,
-              suffix,
-              options.caseSensitive,
-            )) winner = item;
+            if (!winner && matchSuffix(item.address)) winner = item;
           }
 
           if (winner) {
@@ -521,11 +519,7 @@ async function runGpuSearch(
           if (!item.ok) continue;
           state.attempts += 1;
           state.sampleAddress = item.address;
-          if (!winner && matchesVanitySuffix(
-            item.address,
-            suffix,
-            options.caseSensitive,
-          )) winner = item;
+          if (!winner && matchSuffix(item.address)) winner = item;
         }
 
         if (winner) {
@@ -570,6 +564,9 @@ async function runSearch(
   options: SearchOptions,
   suffix: string,
 ): Promise<void> {
+  const matchSuffix = createVanitySuffixMatcher(
+    normalizeVanitySuffixes(suffix), options.caseSensitive,
+  );
   const now = performance.now();
   const state: RunState = {
     startedAt: now,
@@ -580,7 +577,7 @@ async function runSearch(
 
   if (options.engine === 'gpu') {
     try {
-      await runGpuSearch(runId, workerId, options, suffix, state);
+      await runGpuSearch(runId, workerId, options, matchSuffix, state);
       return;
     } catch (error) {
       if (runId !== activeRunId) return;
@@ -595,9 +592,9 @@ async function runSearch(
   }
 
   if (options.mnemonicScheme === 'ton-24') {
-    await runTonMnemonicCpuSearch(runId, workerId, options, suffix, state);
+    await runTonMnemonicCpuSearch(runId, workerId, options, matchSuffix, state);
   } else {
-    await runCpuSearch(runId, workerId, options, suffix, state);
+    await runCpuSearch(runId, workerId, options, matchSuffix, state);
   }
 }
 

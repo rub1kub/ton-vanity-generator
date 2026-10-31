@@ -21,6 +21,10 @@ import {
   createPerformanceCalibrationPlan, selectFastestCalibrationResult,
   type PerformanceCalibrationResult, type PerformanceCalibrationStep,
 } from './lib/performance-calibration';
+import {
+  createVanitySuffixMatcher, expectedVanityAttempts, normalizeVanitySuffixes,
+  validateVanitySuffixes,
+} from './lib/search';
 import type {
   AddressFormat, ComputeEngine, FoundCandidate, FoundWallet, MnemonicScheme,
   SearchOptions, SearchProgress, WalletVersion, WorkerResponse,
@@ -30,7 +34,7 @@ type Screen = 'setup' | 'searching' | 'found' | 'seed-ready' | 'seed';
 type CopyTarget = 'address' | 'seed' | null;
 const TelegramRotation = lazy(() => import('./components/TelegramRotation').then((module) => ({ default: module.TelegramRotation })));
 
-const PRESETS = ['GRAM', 'MONEY', 'TON', 'DUCK'];
+const PRESETS = ['PUMP', 'GRAM', 'DIMA', 'MONEY', 'TON', 'DUCK'];
 const GPU_PIPELINE_STABILITY_CAP = 16;
 const WALLET_LABELS: Record<WalletVersion, string> = {
   w5: 'W5', v4r2: 'v4R2', tg: 'tgWallet',
@@ -58,13 +62,6 @@ function resolveEngineWorkerCount(
   if (selection === 'maximum') return maximum;
   if (!Number.isFinite(selection)) return Math.min(8, maximum);
   return Math.min(maximum, Math.max(1, Math.floor(selection)));
-}
-
-function expectedAttempts(suffix: string, caseSensitive: boolean): number {
-  if (!suffix) return 0;
-  if (caseSensitive) return 64 ** suffix.length;
-  const letters = [...suffix].filter((character) => /[a-z]/i.test(character)).length;
-  return 64 ** suffix.length / 2 ** letters;
 }
 
 function compactNumber(value: number, locale: Locale): string {
@@ -111,7 +108,7 @@ function ScreenSticker({ screen, locale }: { screen: Screen; locale: Locale }) {
 
 function HighlightedAddress({ address, suffix }: { address: string; suffix: string }) {
   const prefix = address.slice(0, Math.max(0, address.length - suffix.length));
-  const ending = address.slice(-suffix.length);
+  const ending = suffix ? address.slice(-suffix.length) : '';
   return <span className="address-text">{prefix}<strong>{ending}</strong></span>;
 }
 
@@ -209,7 +206,21 @@ export function App() {
     ? deviceProfile.webgpu.adapterAvailable && !deviceProfile.mobile
     : gpuApiAvailable;
 
-  const cleanSuffix = suffix.trim();
+  const suffixes = useMemo(() => normalizeVanitySuffixes(suffix), [suffix]);
+  const cleanSuffix = suffixes.join(', ');
+  const suffixValidation = useMemo(() => validateVanitySuffixes(suffix, 8), [suffix]);
+  const matchSuffix = useMemo(
+    () => createVanitySuffixMatcher(suffixes, caseSensitive), [suffixes, caseSensitive],
+  );
+  const isPresetSelected = (preset: string) => suffixes.some((ending) => (
+    caseSensitive ? ending === preset : ending.toLowerCase() === preset.toLowerCase()
+  ));
+  const togglePreset = (preset: string) => {
+    const selected = isPresetSelected(preset);
+    setSuffix((selected ? suffixes.filter((ending) => (
+      caseSensitive ? ending !== preset : ending.toLowerCase() !== preset.toLowerCase()
+    )) : [...suffixes, preset]).join(', '));
+  };
   const workerCount = resolveEngineWorkerCount(engine, concurrencySelection, concurrencyPolicy);
   const workerCountOptions = engine === 'gpu'
     ? Array.from({ length: maximumGpuPipelineCount(concurrencyPolicy) }, (_, index) => index + 1)
@@ -227,13 +238,14 @@ export function App() {
   const powerAutoWorkerCount = resolveEngineWorkerCount(powerEngine, 'auto', concurrencyPolicy);
   const powerMaximumWorkerCount = resolveEngineWorkerCount(powerEngine, 'maximum', concurrencyPolicy);
   const suffixError = useMemo(() => {
-    if (!cleanSuffix) return t('suffix.required');
-    if (!/^[A-Za-z0-9_-]+$/.test(cleanSuffix)) return t('suffix.characters');
-    if (cleanSuffix.length > 8) return t('suffix.maximum');
-    return '';
-  }, [cleanSuffix, t]);
+    if (suffixValidation.valid) return '';
+    if (suffixValidation.error === 'empty') return t('suffix.required');
+    if (suffixValidation.error === 'too-long') return t('suffix.maximum');
+    return t('suffix.characters');
+  }, [suffixValidation, t]);
   const attemptsEstimate = useMemo(
-    () => expectedAttempts(cleanSuffix, caseSensitive), [caseSensitive, cleanSuffix],
+    () => suffixValidation.valid ? expectedVanityAttempts(suffixValidation.suffixes, caseSensitive) : 0,
+    [caseSensitive, suffixValidation],
   );
 
   useEffect(() => {
@@ -877,20 +889,26 @@ export function App() {
         <h2 id="settings-title" className="sr-only">{t('settings.title')}</h2>
         <label className="field-label" htmlFor="suffix">{t('suffix.label')}</label>
         <div className={`suffix-field ${suffixError && suffix ? 'suffix-field--error' : ''}`}>
-          <span>…</span>
-          <input id="suffix" value={suffix}
-            onChange={(event) => setSuffix(event.target.value.replace(/\s/g, '').slice(0, 8))}
-            placeholder="GRAM" autoComplete="off" autoCapitalize="characters" spellCheck={false}
-            aria-describedby="suffix-hint" aria-invalid={Boolean(suffixError)} />
-          <span className="character-count">{cleanSuffix.length}/8</span>
+          <span aria-hidden="true">…</span>
+          <textarea id="suffix" value={suffix} rows={2}
+            onChange={(event) => setSuffix(event.target.value)}
+            placeholder="PUMP, GRAM, DIMA" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false}
+            aria-describedby="suffix-help suffix-hint" aria-invalid={Boolean(suffixError)} />
         </div>
+        <div id="suffix-help" className="field-hint">{t('suffix.hint')}</div>
         <div id="suffix-hint" className={`field-hint ${suffixError ? 'field-hint--error' : ''}`}>{suffixError || estimateLabel(attemptsEstimate)}</div>
-        <div className="preset-row" aria-label={t('presets.label')}>
+        <div className="preset-row" role="group" aria-label={t('presets.label')}>
           {PRESETS.map((preset) => <button type="button" key={preset}
-            className={cleanSuffix === preset ? 'chip chip--active' : 'chip'}
-            aria-pressed={cleanSuffix === preset}
-            onClick={() => setSuffix(preset)}>{preset}</button>)}
+            className={isPresetSelected(preset) ? 'chip chip--active' : 'chip'}
+            aria-pressed={isPresetSelected(preset)}
+            onClick={() => togglePreset(preset)}>{preset}</button>)}
         </div>
+        <label className="toggle-row">
+          <span className="setting-icon setting-icon--violet"><MagicWand weight="fill" /></span>
+          <span className="toggle-copy"><strong>{t('case.title')}</strong><small>{caseSensitive ? t('case.exact') : t('case.relaxed')}</small></span>
+          <input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />
+          <span className="toggle" aria-hidden="true" />
+        </label>
 
         <div className="setting-block">
           <div className="setting-heading">
@@ -999,13 +1017,6 @@ export function App() {
               </select>
             </label>
 
-            <label className="toggle-row">
-              <span className="setting-icon setting-icon--violet"><MagicWand weight="fill" /></span>
-              <span className="toggle-copy"><strong>{t('case.title')}</strong><small>{caseSensitive ? t('case.exact') : t('case.relaxed')}</small></span>
-              <input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />
-              <span className="toggle" aria-hidden="true" />
-            </label>
-
             <div className="advanced-group">
               <div className="advanced-label">{t('format.title')}</div>
               <div className="radio-stack">
@@ -1040,7 +1051,7 @@ export function App() {
     <>
       <ScreenSticker screen="searching" locale={locale} />
       <div className="hero-copy"><StatusPill locale={locale} /><h1 tabIndex={-1}>{t('search.title')}</h1>
-        <p>{t('search.description', { suffix: cleanSuffix, version: WALLET_LABELS[version], engine: engineLabel })}</p></div>
+        <p>{t('search.description', { suffix: suffixes.map((ending) => `…${ending}`).join(', '), version: WALLET_LABELS[version], engine: engineLabel })}</p></div>
       {engineNotice && <div className="notice-banner" role="status">{engineNotice}</div>}
       <section className={isPaused ? 'panel progress-panel is-paused' : 'panel progress-panel'}>
         <div className="pulse-orbit" aria-hidden="true"><span /></div>
@@ -1112,7 +1123,7 @@ export function App() {
       <section className="panel found-panel">
         <div className="wallet-meta"><span>TON {WALLET_LABELS[foundCandidate.version]}</span>
           <span>{foundCandidate.addressFormat === 'bounceable' ? 'Bounceable' : 'Non-bounceable'}</span></div>
-        <div className="found-address"><HighlightedAddress address={foundCandidate.address} suffix={cleanSuffix} />
+        <div className="found-address"><HighlightedAddress address={foundCandidate.address} suffix={matchSuffix(foundCandidate.address) || ''} />
           <button type="button" className="icon-button" aria-label={t('found.copyAddress')}
             onClick={() => void copyText(foundCandidate.address, 'address')}>
             {copyTarget === 'address' ? <Check weight="bold" /> : <Copy weight="bold" />}</button></div>

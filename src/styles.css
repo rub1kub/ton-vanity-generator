@@ -231,8 +231,8 @@ a { color: inherit; text-decoration: none; }
 .field-label { display: block; margin: 0 0 8px 4px; color: var(--secondary); font-size: 13px; font-weight: 700; }
 .suffix-field {
   display: flex;
-  align-items: center;
-  height: 56px;
+  align-items: flex-start;
+  min-height: 56px;
   padding: 0 14px;
   border: 1px solid rgba(255,255,255,.08);
   border-radius: 16px;
@@ -242,10 +242,9 @@ a { color: inherit; text-decoration: none; }
 }
 .suffix-field:focus-within { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .suffix-field--error { border-color: rgba(255,122,122,.7); }
-.suffix-field > span:first-child { color: var(--muted); font-size: 24px; letter-spacing: 2px; }
-.suffix-field input { flex: 1; align-self: stretch; min-width: 0; border: 0; outline: 0; background: transparent; color: #fff; font-size: 22px; font-weight: 800; letter-spacing: .06em; text-transform: none; }
-.suffix-field input::placeholder { color: #454548; }
-.suffix-field .character-count { color: var(--muted); font-size: 12px; font-weight: 700; }
+.suffix-field > span:first-child { margin-top: 12px; color: var(--muted); font-size: 24px; letter-spacing: 2px; }
+.suffix-field textarea { flex: 1; min-width: 0; padding: 12px 0; border: 0; outline: 0; resize: vertical; background: transparent; color: #fff; font: inherit; font-size: 20px; line-height: 1.5; font-weight: 800; letter-spacing: .04em; text-transform: none; }
+.suffix-field textarea::placeholder { color: #454548; }
 .field-hint { min-height: 20px; margin: 7px 4px 0; color: var(--muted); font-size: 13px; }
 .field-hint--error { color: var(--danger); }
 

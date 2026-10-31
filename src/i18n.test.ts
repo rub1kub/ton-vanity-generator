@@ -26,9 +26,9 @@ describe('locale routing', () => {
 describe('translations', () => {
   it('interpolates localized runtime values', () => {
     expect(translate('en', 'search.description', {
-      suffix: 'TON',
+      suffix: '…TON, …GRAM',
       version: 'W5',
       engine: 'GPU · WebGPU',
-    })).toContain('Searching for …TON in W5 addresses · GPU · WebGPU.');
+    })).toContain('Searching for …TON, …GRAM in W5 addresses · GPU · WebGPU.');
   });
 });

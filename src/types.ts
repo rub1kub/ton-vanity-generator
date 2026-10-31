@@ -5,6 +5,7 @@ export type SearchLocale = 'ru' | 'en';
 export type MnemonicScheme = 'multichain-12' | 'ton-24';
 
 export interface SearchOptions {
+  /** One or more comma-separated endings; any matching ending completes the search. */
   suffix: string;
   version: WalletVersion;
   addressFormat: AddressFormat;

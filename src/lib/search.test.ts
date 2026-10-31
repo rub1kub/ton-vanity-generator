@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FRIENDLY_ADDRESS_LENGTH,
+  createVanitySuffixMatcher,
+  expectedVanityAttempts,
   matchesVanitySuffix,
   normalizeVanitySuffix,
+  normalizeVanitySuffixes,
   validateSearchOptions,
   validateVanitySuffix,
+  validateVanitySuffixes,
 } from './search';
 
 describe('normalizeVanitySuffix', () => {
@@ -51,6 +55,76 @@ describe('matchesVanitySuffix', () => {
   });
 });
 
+describe('comma-separated endings', () => {
+  it('trims entries, removes duplicates and ignores empty separators without changing case', () => {
+    expect(normalizeVanitySuffixes(' PUMP, GRAM,\n DiMa, PUMP, , ')).toEqual(['PUMP', 'GRAM', 'DiMa']);
+    expect(validateVanitySuffixes(' PUMP, GRAM, DIMA ', 8)).toEqual({
+      valid: true, suffixes: ['PUMP', 'GRAM', 'DIMA'],
+    });
+  });
+
+  it.each([
+    [', , \n', 'empty'],
+    ['PUMP, ТОН, DIMA', 'invalid-characters'],
+    ['PUMP, TO N', 'invalid-characters'],
+    ['PUMP, GRAM!', 'invalid-characters'],
+    ['PUMP, 123456789', 'too-long'],
+  ])('rejects %j without silently dropping invalid endings', (value, error) => {
+    expect(validateVanitySuffixes(value, 8)).toEqual({ valid: false, error });
+  });
+
+  it('limits each ending individually, not the total input length', () => {
+    expect(validateVanitySuffixes('ABCDEFGH, 12345678, _-_-_-_-', 8).valid).toBe(true);
+  });
+
+  it.each([true, false])('matches any ending in the list (case sensitive: %s)', (caseSensitive) => {
+    const match = createVanitySuffixMatcher(['PUMP', 'GRAM', 'DIMA'], caseSensitive);
+    expect(match('UQexamplePUMP')).toBe('PUMP');
+    expect(match('UQexampleGRAM')).toBe('GRAM');
+    expect(match('UQexampleDIMA')).toBe('DIMA');
+    expect(match('UQexampleTON')).toBeUndefined();
+    expect(match('UQPUMPexample')).toBeUndefined();
+  });
+
+  it('preserves the case requested for each entry in exact mode', () => {
+    const match = createVanitySuffixMatcher(['PuMp', 'GRAM', 'dima'], true);
+    expect(match('UQexamplePuMp')).toBe('PuMp');
+    expect(match('UQexamplePUMP')).toBeUndefined();
+    expect(match('UQexamplegram')).toBeUndefined();
+    expect(match('UQexampledima')).toBe('dima');
+  });
+
+  it('ignores case for every entry and prefers the longest match for highlighting', () => {
+    const match = createVanitySuffixMatcher(['AM', 'GrAm', 'DIMA'], false);
+    expect(match('UQexamplegRaM')).toBe('GrAm');
+    expect(match('UQexampledima')).toBe('DIMA');
+  });
+
+  it('never lets an empty entry match every address', () => {
+    expect(createVanitySuffixMatcher(['', 'GRAM'], false)('UQexampleTON')).toBeUndefined();
+    expect(createVanitySuffixMatcher([], false)('UQexampleGRAM')).toBeUndefined();
+  });
+});
+
+describe('expectedVanityAttempts', () => {
+  it('adds the probabilities of distinct endings', () => {
+    expect(expectedVanityAttempts(['PUMP', 'GRAM', 'DIMA'], true)).toBeCloseTo(64 ** 4 / 3);
+    expect(expectedVanityAttempts(['PUMP', 'GRAM', 'DIMA'], false)).toBeCloseTo(32 ** 4 / 3);
+  });
+
+  it('does not count duplicate or overlapping endings twice', () => {
+    expect(expectedVanityAttempts(['AM', 'GRAM', 'AM'], true)).toBe(64 ** 2);
+    expect(expectedVanityAttempts(['AM', 'am', 'GrAm'], false)).toBe(32 ** 2);
+    expect(expectedVanityAttempts(['AM', 'am'], true)).toBe(64 ** 2 / 2);
+  });
+
+  it('handles differing lengths and mixed base64 characters', () => {
+    expect(expectedVanityAttempts(['A', '99'], false)).toBeCloseTo(1 / (1 / 32 + 1 / 64 ** 2));
+    expect(expectedVanityAttempts(['A0_-'], false)).toBe(64 ** 4 / 2);
+    expect(expectedVanityAttempts([], false)).toBe(0);
+  });
+});
+
 describe('validateSearchOptions', () => {
   it.each(['cpu', 'gpu'] as const)('allows WalletTg on %s only with twelve words', (engine) => {
     const options = {
@@ -74,5 +148,13 @@ describe('validateSearchOptions', () => {
         mnemonicScheme: 'multichain-12',
       }),
     ).toEqual({ valid: true, suffix: 'GRAM' });
+  });
+
+  it.each(['cpu', 'gpu'] as const)('accepts the same comma-separated list for %s', (engine) => {
+    expect(validateSearchOptions({
+      suffix: ' PUMP, GRAM, DiMa, PUMP, ', version: 'tg',
+      addressFormat: 'non-bounceable', caseSensitive: true,
+      engine, locale: 'ru', mnemonicScheme: 'multichain-12',
+    })).toEqual({ valid: true, suffix: 'PUMP, GRAM, DiMa' });
   });
 });

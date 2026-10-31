@@ -5,7 +5,9 @@ entirely in the browser at [`tonsuite.org/generator/`](https://tonsuite.org/gene
 
 ## What it does
 
-- Searches for a user-chosen ending in a URL-safe TON friendly address.
+- Searches for one or more comma-separated endings (for example `PUMP, GRAM, DIMA`)
+  in a URL-safe TON friendly address. Any ending can win. Example chips toggle
+  independently; case matching applies to each ending as typed or ignores case.
 - Supports mainnet Telegram WalletTg (rev00), W5 v5r1 and Wallet v4R2.
 - Supports non-bounceable `UQ…` and bounceable `EQ…` display formats.
 - Lets the user choose the recommended 12-word TEP-3 Multichain format
@@ -33,6 +35,8 @@ Vanity search is probabilistic. A case-sensitive suffix of length `L` needs
 about `64^L` candidates on average. Ignoring letter case reduces that to about
 `32^L` for all-letter suffixes. BIP39/SLIP-0010 derivation is still non-trivial,
 so long endings can take days, months or longer even with several workers.
+Multiple distinct endings improve the odds; the estimate counts duplicates and
+overlapping endings only once.
 Classic 24-word TON mnemonics use a substantially heavier KDF and therefore
 search more slowly than the default 12-word mode. The UI reports measured speed
 rather than promising a deadline.
